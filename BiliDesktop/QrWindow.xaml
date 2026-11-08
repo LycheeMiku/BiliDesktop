@@ -1,0 +1,7 @@
+<Window x:Class="BiliDesktop.QrWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="{DynamicResource Loc_378EACA774BB9551}" Width="330" Height="390" ResizeMode="NoResize" WindowStartupLocation="CenterScreen">
+  <StackPanel Margin="20" HorizontalAlignment="Center">
+    <TextBlock Text="{DynamicResource Loc_638F23F9589E52F2}" HorizontalAlignment="Center" Margin="0,0,0,12"/>
+    <Image x:Name="CodeImage" Width="220" Height="220" Stretch="Uniform"/>
+    <TextBlock x:Name="State" Text="{DynamicResource Loc_AD5AAF33D6CE9B8A}" Margin="0,12,0,0" TextWrapping="Wrap" HorizontalAlignment="Center"/>
+  </StackPanel>
+</Window>

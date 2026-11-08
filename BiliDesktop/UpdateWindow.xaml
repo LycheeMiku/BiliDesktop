@@ -1,0 +1,9 @@
+<Window x:Class="BiliDesktop.UpdateWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="600" Height="480" MinWidth="480" MinHeight="360" WindowStartupLocation="CenterScreen">
+  <Grid Margin="18"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock x:Name="Heading" FontSize="18" FontWeight="SemiBold"/>
+    <StackPanel x:Name="VersionInfo" Grid.Row="1" Margin="0,10,0,10"><TextBlock x:Name="CurrentVersion"/><TextBlock x:Name="NewVersion" Margin="0,4,0,0"/><TextBlock x:Name="Published" Margin="0,4,0,0"/><TextBlock x:Name="NotesLabel" Margin="0,10,0,0" FontWeight="SemiBold"/></StackPanel>
+    <TextBox x:Name="Notes" Grid.Row="2" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="8"/>
+    <WrapPanel Grid.Row="3" Margin="0,12,0,0"><Button x:Name="LaterButton" Padding="12,5" Margin="0,0,8,0" Click="Later_Click"/><Button x:Name="GithubButton" Padding="12,5" Margin="0,0,8,0" Click="Github_Click"/><Button x:Name="AlternateButton" Padding="12,5" Click="Alternate_Click"/></WrapPanel>
+    <TextBlock x:Name="LinkStatus" Grid.Row="4" Margin="0,8,0,0" TextWrapping="Wrap"/>
+  </Grid>
+</Window>

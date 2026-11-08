@@ -1,0 +1,23 @@
+<Window x:Class="BiliDesktop.AboutWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="680" Height="445" ResizeMode="NoResize" WindowStartupLocation="CenterScreen" Topmost="True">
+  <Grid Margin="20"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel>
+        <TextBlock Text="BiliDesktop" FontSize="22" FontWeight="SemiBold"/>
+        <StackPanel Orientation="Horizontal" Margin="0,5,0,16"><TextBlock x:Name="VersionLabel"/><TextBlock x:Name="VersionValue" Text="  beta1"/></StackPanel>
+        <TextBlock x:Name="DeveloperLabel" FontWeight="SemiBold" Margin="0,0,0,5"/>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="DeveloperLink" NavigateUri="https://github.com/LycheeMiku/BiliDesktop" RequestNavigate="Link_RequestNavigate">https://github.com/LycheeMiku/BiliDesktop</Hyperlink></TextBlock>
+        <TextBlock x:Name="ReferencesLabel" FontSize="16" FontWeight="SemiBold" Margin="0,18,0,8"/>
+        <TextBlock x:Name="LiveLabel" FontWeight="SemiBold" Margin="0,0,0,4"/>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="RecorderLink" NavigateUri="https://github.com/BililiveRecorder/BililiveRecorder" RequestNavigate="Link_RequestNavigate">https://github.com/BililiveRecorder/BililiveRecorder</Hyperlink></TextBlock>
+        <TextBlock x:Name="VideoLabel" FontWeight="SemiBold" Margin="0,12,0,4"/>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="DownkyiLink" NavigateUri="https://github.com/yaobiao131/downkyi" RequestNavigate="Link_RequestNavigate">https://github.com/yaobiao131/downkyi</Hyperlink></TextBlock>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="DownkyiAlternativeLink" NavigateUri="https://github.com/leiurayer/downkyi" RequestNavigate="Link_RequestNavigate">https://github.com/leiurayer/downkyi</Hyperlink></TextBlock>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="BilibiliDownLink" NavigateUri="https://github.com/QuanXplor/BilibiliDown" RequestNavigate="Link_RequestNavigate">https://github.com/QuanXplor/BilibiliDown</Hyperlink></TextBlock>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="BilidownWebLink" NavigateUri="https://github.com/firstack-it/bilidown-web" RequestNavigate="Link_RequestNavigate">https://github.com/firstack-it/bilidown-web</Hyperlink></TextBlock>
+        <TextBlock Text="API" FontWeight="SemiBold" Margin="0,12,0,4"/>
+        <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="ApiLink" NavigateUri="https://github.com/rinnein/bilibili-API-collect" RequestNavigate="Link_RequestNavigate">https://github.com/rinnein/bilibili-API-collect</Hyperlink></TextBlock>
+      </StackPanel>
+    </ScrollViewer>
+    <TextBlock x:Name="LinkStatus" Grid.Row="1" Margin="0,8,0,0" TextWrapping="Wrap"/>
+  </Grid>
+</Window>

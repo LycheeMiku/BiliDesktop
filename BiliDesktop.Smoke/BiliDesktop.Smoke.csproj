@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\BiliDesktop\BiliApi.cs" Link="BiliApi.cs" />
+    <Compile Include="..\BiliDesktop\MediaDownload.cs" Link="MediaDownload.cs" />
+    <Compile Include="..\BiliDesktop\TransferControl.cs" Link="TransferControl.cs" />
+    <Compile Include="..\BiliDesktop\MediaTools.cs" Link="MediaTools.cs" />
+    <Compile Include="..\BiliDesktop\MediaSizeProbe.cs" Link="MediaSizeProbe.cs" />
+    <Compile Include="..\BiliDesktop\StartupRegistration.cs" Link="StartupRegistration.cs" />
+    <Compile Include="..\BiliDesktop\CredentialStore.cs" Link="CredentialStore.cs" />
+    <Compile Include="..\BiliDesktop\BatchPolicy.cs" Link="BatchPolicy.cs" />
+    <Compile Include="..\BiliDesktop\DownloadNaming.cs" Link="DownloadNaming.cs" />
+    <Compile Include="..\BiliDesktop\AudioMetadata.cs" Link="AudioMetadata.cs" />
+    <Compile Include="..\BiliDesktop\UpdateChecker.cs" Link="UpdateChecker.cs" />
+    <Compile Include="..\BiliDesktop\BatchJob.cs" Link="BatchJob.cs" />
+    <Compile Include="..\BiliDesktop\BatchDownloadEngine.cs" Link="BatchDownloadEngine.cs" />
+    <Compile Include="..\BiliDesktop\BatchScheduler.cs" Link="BatchScheduler.cs" />
+    <Compile Include="..\BiliDesktop\BackupStore.cs" Link="BackupStore.cs" />
+    <Compile Include="..\BiliDesktop\BackupEngine.cs" Link="BackupEngine.cs" />
+    <Compile Include="..\BiliDesktop\KeywordEngine.cs" Link="KeywordEngine.cs" />
+    <Content Include="..\BiliDesktop\vendor\aria2\aria2c.exe" Link="vendor\aria2\aria2c.exe" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_winsqlite3" Version="2.1.11" />
+  </ItemGroup>
+
+</Project>
