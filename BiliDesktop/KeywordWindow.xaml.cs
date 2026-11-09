@@ -19,7 +19,7 @@ public partial class KeywordWindow : Window
     {
         this.store = store; this.trigger = trigger; InitializeComponent();
         SinceDate.SelectedDate = DateTime.Today;
-        try { DirectoryBox.Text = AppSettings.LoadDownloadDirectory(); } catch (Exception) { DirectoryBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos); }
+        DirectoryBox.Text = AppSettings.IndependentDownloadDirectory();
         Terms.ItemsSource = keywords;
         KeywordHint.SetResourceReference(TextBlock.TextProperty, Localizer.Key("逐个输入并添加关键词；可选择满足任意或全部。"));
         TermsLabel.SetResourceReference(TextBlock.TextProperty, Localizer.Key("已添加关键词"));

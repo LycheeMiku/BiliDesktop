@@ -38,12 +38,13 @@ public partial class MainWindow : Window
     private bool liveStopping;
     private bool liveCloseAllowed;
     private readonly DownloadCloseGuard downloadCloseGuard = new();
-    private bool languageReady;
+    private bool allowBackground;
     private bool mainClosed;
     private bool exitRequested;
     private BackgroundWindowController? background;
     private KeywordWindow? keywordWindow;
     private AboutWindow? aboutWindow;
+    private SettingsWindow? settingsWindow;
     private readonly IStartupValueStore startupStore;
     private string? startupExecutable;
 
@@ -52,32 +53,23 @@ public partial class MainWindow : Window
     {
         this.api = api; this.updateChecker = updateChecker ?? new UpdateChecker(); startupStore = startupValueStore ?? new WindowsStartupStore();
         InitializeComponent();
-        LanguageSelector.SelectedIndex = Localizer.Language switch { "zh-TW" => 1, "en" => 2, _ => 0 }; languageReady = true;
         if (enableBackground || startupValueStore is not null) try
         {
             startupExecutable = startupPath ?? Environment.ProcessPath;
             if (startupExecutable is null || !Path.GetFileName(startupExecutable).Equals("BiliDesktop.exe", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("无法确定当前程序路径。");
-            RefreshStartup();
         }
-        catch (Exception ex) { StartAtLogin.IsEnabled = false; Status.Text = "开机启动不可用：" + ex.Message; }
-        UserAgentPresetLabel.SetResourceReference(System.Windows.Controls.TextBlock.TextProperty, Localizer.Key("平台预设"));
+        catch (Exception ex) { startupExecutable = null; Status.Text = "开机启动不可用：" + ex.Message; }
         QualityLabel.SetResourceReference(TextBlock.TextProperty, Localizer.Key("清晰度")); CodecLabel.SetResourceReference(TextBlock.TextProperty, Localizer.Key("视频编码"));
-        DownloadDirectoryGroup.SetResourceReference(HeaderedContentControl.HeaderProperty, Localizer.Key("默认下载目录"));
+        SettingsButton.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("设置"));
+        LiveButton.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("直播录制"));
+        AccountLabel.SetResourceReference(TextBlock.TextProperty, Localizer.Key("账号"));
+        EmptyState.SetResourceReference(TextBlock.TextProperty, Localizer.Key("输入视频链接、BV 或 AV 号"));
         DownloadQueueButton.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("下载任务"));
         AboutButton.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("关于"));
         UpdateAvailable.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("更新可用"));
-        AllowBackground.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("允许后台运行"));
-        try { AllowBackground.IsChecked = AppSettings.LoadAllowBackground(); } catch (Exception) { AllowBackground.IsChecked = false; }
-        DownloadDirectoryButton.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("选择下载目录"));
-        MaxTasksLabel.SetResourceReference(TextBlock.TextProperty, Localizer.Key("最大并发下载任务数"));
-        UnlimitedTasks.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("不限"));
-        try { DownloadDirectoryBox.Text = AppSettings.LoadDownloadDirectory(); } catch (Exception) { DownloadDirectoryBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos); }
-        UserAgentPresetBox.ItemsSource = UserAgentPresets.All;
-        try { var ua = AppSettings.LoadUserAgent(); api.SetUserAgent(ua); UserAgentBox.Text = ua; }
-        catch (Exception) { UserAgentBox.Text = BiliApi.DefaultUserAgent; }
-        UserAgentPresetBox.SelectedItem = UserAgentPresets.All.FirstOrDefault(x => x.Value == UserAgentBox.Text) ?? UserAgentPresets.All.Last();
-        try { var options = AppSettings.LoadTransferOptions(); MediaDownload.Configure(options); Connections.Text = options.Connections.ToString(); CacheSize.Text = options.CacheMiB.ToString(); MaxTasks.Text = (options.MaxConcurrentTasks == 0 ? 4 : options.MaxConcurrentTasks).ToString(); UnlimitedTasks.IsChecked = options.MaxConcurrentTasks == 0; }
-        catch (Exception) { MediaDownload.Configure(new(8, 16)); Connections.Text = "8"; CacheSize.Text = "16"; MaxTasks.Text = "4"; UnlimitedTasks.IsChecked = false; }
+        try { allowBackground = AppSettings.LoadAllowBackground(); } catch (Exception) { allowBackground = false; }
+        try { api.SetUserAgent(AppSettings.LoadUserAgent()); } catch (Exception) { api.SetUserAgent(BiliApi.DefaultUserAgent); }
+        try { MediaDownload.Configure(AppSettings.LoadTransferOptions()); } catch (Exception) { MediaDownload.Configure(new(8, 16)); }
         if (enableBackground) try
         {
             backupStore = new BackupStore(); var gateway = new QueuedBackupGateway(api);
@@ -104,6 +96,7 @@ public partial class MainWindow : Window
             backupTimer.Stop(); backupCancellation.Cancel(); updateTimer.Stop(); updateCancellation.Cancel();
             updateWindow?.Close();
             keywordWindow?.Close();
+            settingsWindow?.Close();
             sizeCancellation?.Cancel(); sizeCancellation?.Dispose();
             background?.Dispose();
             liveManager?.Dispose();
@@ -112,36 +105,38 @@ public partial class MainWindow : Window
         };
     }
 
-    private void RefreshStartup()
+    private void Settings_Click(object sender, RoutedEventArgs e) => ShowSettings();
+    internal void ActivateFromAnotherInstance()
     {
-        var state = StartupRegistration.GetState(startupStore, startupExecutable ?? "");
-        StartAtLogin.IsChecked = state == StartupState.Enabled;
-        StartAtLogin.IsEnabled = state != StartupState.Other;
-        if (state == StartupState.Other) StartAtLogin.SetResourceReference(ToolTipProperty, Localizer.Key("启动项被其他版本占用。"));
-        else if (state == StartupState.OtherVersion) StartAtLogin.SetResourceReference(ToolTipProperty, Localizer.Key("启动项指向旧版；勾选后切换到当前版本。"));
-        else StartAtLogin.ClearValue(ToolTipProperty);
-    }
-
-    private void Startup_Click(object sender, RoutedEventArgs e)
-    {
-        var enabled = StartAtLogin.IsChecked == true;
-        try
+        if (mainClosed) return;
+        if (background?.IsActive == true) background.RestoreForActivation();
+        else
         {
-            StartupRegistration.SetEnabled(startupStore, startupExecutable ?? "", enabled);
-            RefreshStartup(); Status.Text = enabled ? "启动项已设置" : "启动项已移除";
+            if (!IsVisible) Show();
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
         }
-        catch (Exception ex)
-        {
-            try { RefreshStartup(); } catch { StartAtLogin.IsEnabled = false; }
-            Status.Text = "开机启动不可用：" + ex.Message;
-        }
+        if (!ExclusiveWindow.ActivateExisting()) Activate();
     }
-
-    private void AllowBackground_Click(object sender, RoutedEventArgs e)
+    internal SettingsWindow? ShowSettings()
     {
-        var enabled = AllowBackground.IsChecked == true;
-        try { AppSettings.SaveAllowBackground(enabled); }
-        catch (Exception ex) { AllowBackground.IsChecked = !enabled; Status.Text = "后台运行不可用：" + ex.Message; }
+        if (settingsWindow is not null)
+        {
+            if (!settingsWindow.IsVisible) settingsWindow.Show();
+            if (settingsWindow.WindowState == WindowState.Minimized) settingsWindow.WindowState = WindowState.Normal;
+            settingsWindow.Activate(); return settingsWindow;
+        }
+        if (ExclusiveWindow.ActivateExisting()) return null;
+        var window = new SettingsWindow(api, startupStore, startupExecutable, ReparseAfterUserAgentChangeAsync, enabled => allowBackground = enabled);
+        settingsWindow = window;
+        window.Closed += (_, _) => { if (ReferenceEquals(settingsWindow, window)) settingsWindow = null; };
+        try { ExclusiveWindow.Show(window); } catch { settingsWindow = null; throw; }
+        return window;
+    }
+    private async Task ReparseAfterUserAgentChangeAsync()
+    {
+        if (mainClosed) return;
+        var previous = parsingInput ?? (video is not null ? lastParsedInput : null);
+        if (previous is not null) await ParseVideoAsync(previous, video is null ? null : Pages.SelectedIndex);
     }
     private void EnterBackground()
     {
@@ -192,63 +187,11 @@ public partial class MainWindow : Window
             if (aboutWindow.WindowState == WindowState.Minimized) aboutWindow.WindowState = WindowState.Normal;
             aboutWindow.Activate(); return;
         }
+        if (ExclusiveWindow.ActivateExisting()) return;
         var window = new AboutWindow(); aboutWindow = window;
         window.Closed += (_, _) => { if (ReferenceEquals(aboutWindow, window)) aboutWindow = null; };
-        try { window.Show(); } catch { aboutWindow = null; throw; }
+        try { ExclusiveWindow.Show(window); } catch { aboutWindow = null; throw; }
     }
-
-    private void UserAgentPreset_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (UserAgentBox is not null && UserAgentPresetBox.SelectedItem is UserAgentPreset { Value: string value }) UserAgentBox.Text = value;
-    }
-    private void UserAgentText_Changed(object sender, TextChangedEventArgs e)
-    {
-        if (UserAgentPresetBox?.SelectedItem is UserAgentPreset { Value: string value } && UserAgentBox.Text != value) UserAgentPresetBox.SelectedItem = UserAgentPresets.All.Last();
-    }
-    private async void ApplyUserAgent_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var old = api.UserAgent; api.SetUserAgent(UserAgentBox.Text);
-            try { AppSettings.SaveUserAgent(api.UserAgent); } catch { api.SetUserAgent(old); throw; }
-            Status.Text = "User-Agent 已应用";
-            var previous = parsingInput ?? (video is not null ? lastParsedInput : null);
-            if (previous is not null && old != api.UserAgent) await ParseVideoAsync(previous, video is null ? null : Pages.SelectedIndex);
-        }
-        catch (Exception ex) { Status.Text = $"User-Agent 设置失败：{ex.Message}"; }
-    }
-    private void DownloadDirectory_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog { Title = Localizer.Translate("选择下载目录"), Multiselect = false };
-        if (dialog.ShowDialog() != true) return;
-        try { AppSettings.SaveDownloadDirectory(dialog.FolderName); DownloadDirectoryBox.Text = AppSettings.LoadDownloadDirectory(); }
-        catch (Exception ex) { Status.Text = ex.Message; }
-    }
-
-    private void Language_Changed(object sender, SelectionChangedEventArgs e)
-    {
-        if (!languageReady) return;
-        var language = LanguageSelector.SelectedIndex switch { 1 => "zh-TW", 2 => "en", _ => "zh-CN" };
-        try { AppSettings.SaveLanguage(language); Localizer.Apply(language); UserAgentPresetBox.Items.Refresh(); }
-        catch (Exception ex) { Status.Text = "Language setting failed: " + ex.Message; }
-    }
-
-    private void ApplyTransfer_Click(object sender, RoutedEventArgs e)
-    {
-        var previous = MediaDownload.CurrentOptions;
-        try
-        {
-            if (!int.TryParse(Connections.Text, out var connections) || !int.TryParse(CacheSize.Text, out var cache)) throw new ArgumentException("请输入整数。");
-            var maximum = 0;
-            if (UnlimitedTasks.IsChecked != true && (!int.TryParse(MaxTasks.Text, out maximum) || maximum < 1)) throw new ArgumentException("请输入大于零的并发任务数。");
-            var options = new TransferOptions(connections, cache, maximum);
-            MediaDownload.Configure(options); AppSettings.SaveTransferOptions(options);
-            Status.Text = Localizer.Translate("下载设置已应用。");
-        }
-        catch (Exception ex) { MediaDownload.Configure(previous); Status.Text = "性能设置失败：" + ex.Message; }
-    }
-
-    private void UnlimitedTasks_Changed(object sender, RoutedEventArgs e) { if (MaxTasks is not null && UnlimitedTasks is not null) MaxTasks.IsEnabled = UnlimitedTasks.IsChecked != true; }
 
     private void Options_Changed(object sender, SelectionChangedEventArgs e) { if (AudioOptions is not null && DownloadMode is not null) AudioOptions.Visibility = DownloadMode.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed; UpdateDownloadAvailability(); UpdateSelectedSize(); }
 
@@ -277,9 +220,14 @@ public partial class MainWindow : Window
         if (mode == 3 || selectedVideo is null && selectedAudio is null) { SelectedSize.Text = ""; return; }
         SelectedSize.Text = Localizer.Translate("正在查询所选规格大小…");
         var tasks = new[] { selectedVideo?.Urls, selectedAudio?.Urls }.Where(x => x is not null).Select(x => MediaSizeProbe.GetSizeAsync(x!, api.UserAgent, cancellation)).ToArray();
-        var sizes = await Task.WhenAll(tasks);
-        if (version != sizeVersion || cancellation.IsCancellationRequested) return;
-        SelectedSize.Text = sizes.All(x => x.HasValue) ? Localizer.Translate("所选流大小") + $": {sizes.Sum(x => x!.Value) / 1048576d:F1} MiB" : Localizer.Translate("所选流大小未知");
+        try
+        {
+            var sizes = await Task.WhenAll(tasks);
+            if (mainClosed || version != sizeVersion || cancellation.IsCancellationRequested) return;
+            SelectedSize.Text = sizes.All(x => x.HasValue) ? Localizer.Translate("所选流大小") + $": {sizes.Sum(x => x!.Value) / 1048576d:F1} MiB" : Localizer.Translate("所选流大小未知");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { if (!mainClosed && version == sizeVersion && !cancellation.IsCancellationRequested) SelectedSize.Text = Localizer.Translate("所选流大小未知"); }
     }
 
     private void UpdateDownloadAvailability()
@@ -349,13 +297,19 @@ public partial class MainWindow : Window
     }
 
     private async void Parse_Click(object sender, RoutedEventArgs e) => await ParseVideoAsync(Input.Text);
+    private void Input_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter) return;
+        e.Handled = true;
+        if (!string.Equals(parsingInput, Input.Text, StringComparison.Ordinal)) Parse_Click(sender, e);
+    }
     internal async Task ParseVideoAsync(string inputText, int? selectedPage = null)
     {
         var version = ++requestVersion;
         parsingInput = inputText;
         try
         {
-            Status.Text = "正在解析…"; TitleText.Text = ""; video = null; media = null; Pages.ItemsSource = null; Streams.ItemsSource = null; Qualities.ItemsSource = null; Codecs.ItemsSource = null; AudioStreams.ItemsSource = null; sizeCancellation?.Cancel(); SelectedSize.Text = ""; DownloadButton.IsEnabled = false; BatchButton.IsEnabled = false; CollectionButton.IsEnabled = false;
+            Status.Text = "正在解析…"; TitleText.Text = ""; ResultsPanel.Visibility = Visibility.Collapsed; EmptyState.Visibility = Visibility.Visible; video = null; media = null; Pages.ItemsSource = null; Streams.ItemsSource = null; Qualities.ItemsSource = null; Codecs.ItemsSource = null; AudioStreams.ItemsSource = null; sizeCancellation?.Cancel(); SelectedSize.Text = ""; DownloadButton.IsEnabled = false; BatchButton.IsEnabled = false; CollectionButton.IsEnabled = false;
             var input = await api.ResolveVideoLinkAsync(inputText);
             if (version != requestVersion) return;
             if (BiliApi.TryParseCollectionLink(input, out var mid, out var collectionId)) { parsingInput = null; await OpenCollectionLinkAsync(mid, collectionId); return; }
@@ -363,7 +317,7 @@ public partial class MainWindow : Window
             var isPgc = BiliApi.TryParsePgc(input, out var pgcKind, out var pgcId);
             var result = isCourse ? await api.GetCourseAsync(input) : isPgc ? await api.GetPgcAsync(input) : await api.GetVideoAsync(input);
             if (version != requestVersion) return;
-            video = result; lastParsedInput = input; parsingInput = null; TitleText.Text = $"{result.Title} · {result.Owner}";
+            video = result; lastParsedInput = input; parsingInput = null; TitleText.Text = $"{result.Title} · {result.Owner}"; ResultsPanel.Visibility = Visibility.Visible; EmptyState.Visibility = Visibility.Collapsed;
             Pages.ItemsSource = result.Pages;
             var selectedIndex = isCourse && courseKind == "ep" ? result.Pages.ToList().FindIndex(p => p.EpisodeId == courseId) : isPgc && pgcKind == "ep" ? result.Pages.ToList().FindIndex(p => p.EpisodeId == pgcId) : isPgc || isCourse ? 0 : BiliApi.RequestedPage(input, result.Pages.Count);
             Pages.SelectedIndex = selectedPage is >= 0 && selectedPage < result.Pages.Count ? selectedPage.Value : Math.Max(0, selectedIndex); UpdateDownloadAvailability();
@@ -384,7 +338,7 @@ public partial class MainWindow : Window
             if (collection.Count == 0) { Status.Text = "合集没有可访问的视频。"; return; }
             var first = await api.GetVideoAsync(collection[0].Bvid);
             if (version != requestVersion) return;
-            video = first; lastParsedInput = first.Bvid; TitleText.Text = $"{first.Title} · {first.Owner}";
+            video = first; lastParsedInput = first.Bvid; TitleText.Text = $"{first.Title} · {first.Owner}"; ResultsPanel.Visibility = Visibility.Visible; EmptyState.Visibility = Visibility.Collapsed;
             Pages.ItemsSource = first.Pages; Pages.SelectedIndex = 0; UpdateDownloadAvailability();
             Status.Text = $"合集共 {collection.Count} 个视频";
             new BatchWindow(api, first, collection, null, null).Show();
@@ -417,7 +371,7 @@ public partial class MainWindow : Window
     {
         if (liveStopping && !liveCloseAllowed) { e.Cancel = true; return; }
         var explicitExit = exitRequested || liveCloseAllowed; exitRequested = false;
-        if (!explicitExit && AllowBackground.IsChecked == true) { e.Cancel = true; EnterBackground(); return; }
+        if (!explicitExit && allowBackground) { e.Cancel = true; EnterBackground(); return; }
         try
         {
             var hasBatch = Application.Current.Windows.OfType<BatchWindow>().Any(w => w.IsRunning);
@@ -534,18 +488,24 @@ public partial class MainWindow : Window
         if (coverExtension is not (".jpg" or ".jpeg" or ".png" or ".webp")) coverExtension = ".jpg";
         var filter = mode == 3 ? $"图片|*{coverExtension}" : mode == 2 ? "M4A 音频|*.m4a|Matroska|*.mkv" : "MP4 视频|*.mp4|Matroska|*.mkv";
         var preferMatroska = chosenAudio is not null && BatchPolicy.NeedsMatroska(chosenAudio);
-        string initialDirectory;
-        try { initialDirectory = DownloadNaming.Folder(AppSettings.LoadDownloadDirectory(), video); Directory.CreateDirectory(initialDirectory); }
-        catch (Exception ex) { Status.Text = "下载目录不可用：" + ex.Message; return; }
         var suggestedName = mode == 2 ? DownloadNaming.AudioBaseName(video, page) : DownloadNaming.BaseName(video, page, Math.Max(1, Pages.SelectedIndex + 1), selected, chosenAudio);
-        var dialog = new SaveFileDialog { Filter = filter, FilterIndex = preferMatroska ? 2 : 1, FileName = suggestedName, InitialDirectory = initialDirectory, AddExtension = true, OverwritePrompt = false };
-        if (dialog.ShowDialog() != true) return;
         try
         {
             var processing = mode is 0 or 1 ? (VideoProcessing)Math.Max(0, VideoProcess.SelectedIndex) : VideoProcessing.Copy;
             if (cover is null && page is null) throw new InvalidOperationException("请选择视频分 P。");
             var audioMetadata = mode == 2 ? AudioOptions.Options.ForVideo(video, page) : null;
-            var path = dialog.FileName;
+            var root = AppSettings.LoadDownloadDirectory();
+            var automatic = AppSettings.LoadUseDefaultVideoDirectory();
+            if (!Directory.Exists(root))
+            {
+                if (automatic) throw new DirectoryNotFoundException("默认视频下载目录不存在，请在设置中重新选择。");
+                root = AppSettings.IndependentDownloadDirectory();
+            }
+            var initialDirectory = DownloadNaming.Folder(root, video);
+            Directory.CreateDirectory(initialDirectory);
+            var extension = mode == 3 ? coverExtension : preferMatroska ? ".mkv" : mode == 2 ? ".m4a" : ".mp4";
+            var path = ChooseDownloadPath(automatic, initialDirectory, suggestedName, extension, filter, preferMatroska, DownloadQueue.Shared, dialog => dialog.ShowDialog(this));
+            if (path is null) return;
             EnqueueManualDownload(DownloadQueue.Shared, Path.GetFileName(path), path, async (control, progress) =>
             {
                 if (cover is not null) await MediaDownload.DownloadAsync(null, null, cover, path, ua, progress, processing: processing, control: control);
@@ -555,6 +515,22 @@ public partial class MainWindow : Window
             Status.Text = Localizer.Translate("已添加下载任务");
         }
         catch (Exception ex) { Status.Text = $"下载失败：{ex.Message}"; }
+    }
+    internal static string? ChooseDownloadPath(bool automatic, string directory, string name, string extension, string filter, bool preferMatroska, DownloadQueue queue, Func<SaveFileDialog, bool?> showDialog)
+    {
+        if (automatic) return AvailableDownloadPath(directory, name, extension, queue);
+        var dialog = new SaveFileDialog { Filter = filter, FilterIndex = preferMatroska ? 2 : 1, FileName = name, InitialDirectory = directory, AddExtension = true, OverwritePrompt = false };
+        return showDialog(dialog) == true ? dialog.FileName : null;
+    }
+    internal static string AvailableDownloadPath(string directory, string name, string extension, DownloadQueue queue)
+    {
+        var reserved = queue.Items.Where(x => x.State is DownloadState.Waiting or DownloadState.Running or DownloadState.Paused or DownloadState.Canceling)
+            .Select(x => Path.GetFullPath(x.Destination)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (var number = 1; ; number++)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(directory, name + (number == 1 ? "" : $" ({number})") + extension));
+            if (!File.Exists(candidate) && !Directory.Exists(candidate) && !reserved.Contains(candidate)) return candidate;
+        }
     }
     internal static DownloadEntry EnqueueManualDownload(DownloadQueue queue, string title, string path, Func<TransferControl, IProgress<string>, Task<string?>> work)
     {

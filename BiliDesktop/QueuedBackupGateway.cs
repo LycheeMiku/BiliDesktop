@@ -18,7 +18,11 @@ public sealed class QueuedBackupGateway(BiliApi api, DownloadQueue? taskQueue = 
     public Task<AccountInfo> AccountAsync() => inner.AccountAsync();
     public Task<FavoriteContents> FavoritesAsync(long folder, CancellationToken cancellation) => inner.FavoritesAsync(folder, cancellation);
     public Task<VideoInfo> VideoAsync(string bvid) => inner.VideoAsync(bvid);
-    public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => inner.StreamsAsync(bvid, page);
+    public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page)
+    {
+        current.Value?.Progress.Report("正在获取视频下载地址…");
+        return api.GetStreamsForPageAsync(bvid, page, current.Value?.Control.Token ?? CancellationToken.None);
+    }
     public Task<VideoSearchPage> SearchAsync(string keyword, int page) => inner.SearchAsync(keyword, page);
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => EnqueueAsync(work, cancellation, canStart, Localizer.Translate("自动下载"), AppSettings.LoadDownloadDirectory());
     public Task InBackupDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory, long ruleId) => EnqueueAsync(work, cancellation, canStart, title, directory, ruleId);

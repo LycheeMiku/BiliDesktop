@@ -21,13 +21,14 @@ public sealed class DownloadEntry : INotifyPropertyChanged
     private string title;
     private bool isChecked;
     private bool retired;
+    private bool pausedWhileWaiting;
     public long? BackupRuleId { get; }
     public bool IsChecked { get => isChecked; set { if (isChecked == value) return; isChecked = value; Notify(); } }
     public string Title { get => title; private set { title = value; Notify(); } }
     public string Destination { get => destination; set { destination = value; Notify(); } }
     public DownloadState State { get => state; private set { state = value; Notify(); Notify(nameof(StateText)); Notify(nameof(CanPause)); Notify(nameof(CanRetry)); } }
-    public string StateText => Localizer.Translate(State switch { DownloadState.Waiting => "排队中", DownloadState.Running => "下载中", DownloadState.Paused => "已暂停", DownloadState.Canceling => "正在取消", DownloadState.Failed => "失败", DownloadState.Canceled => "已取消", DownloadState.Skipped => "已跳过", _ => "完成" });
-    public string Detail { get => detail; private set { detail = value; Notify(); } }
+    public string StateText => State == DownloadState.Running ? Detail : Localizer.Translate(State switch { DownloadState.Waiting => "排队中", DownloadState.Paused => "已暂停", DownloadState.Canceling => "正在取消", DownloadState.Failed => "失败", DownloadState.Canceled => "已取消", DownloadState.Skipped => "已跳过", _ => "完成" });
+    public string Detail { get => detail; private set { detail = value; Notify(); Notify(nameof(StateText)); } }
     public double Percent => State == DownloadState.Completed ? 100 : transfer is { Total: > 0 } p ? Math.Clamp(100d * p.Completed / p.Total, 0, 100) : 0;
     public string ProgressText => transfer is { Total: > 0 } p ? $"{Localizer.Translate(p.Stage)} {p.Completed / 1048576d:F1}/{p.Total / 1048576d:F1} MiB" : "—";
     public string Speed => transfer is { BytesPerSecond: > 0 } p && State == DownloadState.Running ? $"{p.BytesPerSecond / 1048576d:F2} MiB/s" : "—";
@@ -60,8 +61,8 @@ public sealed class DownloadEntry : INotifyPropertyChanged
         catch (Exception) when (current.Token.IsCancellationRequested) { State = DownloadState.Canceled; Detail = Localizer.Translate("已取消"); transfer = null; NotifyProgress(); }
         catch (Exception ex) { Failure = ex; State = DownloadState.Failed; Detail = Localizer.Dynamic("下载失败：" + ex.Message); transfer = null; NotifyProgress(); }
     }
-    public void Pause() { if (control?.Pause() == true) { State = DownloadState.Paused; NotifyProgress(); } }
-    public void Resume() { if (State == DownloadState.Paused) { State = DownloadState.Running; control?.Resume(); NotifyProgress(); } }
+    public void Pause() { if (control?.Pause() == true) { pausedWhileWaiting = State == DownloadState.Waiting; State = DownloadState.Paused; NotifyProgress(); } }
+    public void Resume() { if (State == DownloadState.Paused) { State = pausedWhileWaiting ? DownloadState.Waiting : DownloadState.Running; control?.Resume(); NotifyProgress(); } }
     public void Cancel() { if (State is DownloadState.Waiting or DownloadState.Running or DownloadState.Paused) { State = DownloadState.Canceling; control?.Cancel(); NotifyProgress(); } }
     public void Retry() => Start();
     internal void Retire() { retired = true; Notify(nameof(CanRetry)); Cancel(); }

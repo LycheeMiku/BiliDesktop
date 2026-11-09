@@ -13,12 +13,12 @@ var fallbackHandler = new UpdateFixtureHandler((request, _) =>
     if (request.RequestUri!.Host == "api.github.com") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway));
     if (request.RequestUri.Host == "gh.dpik.top") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("invalid") });
     if (request.RequestUri.Host == "gh-proxy.com") { var redirect = new HttpResponseMessage(System.Net.HttpStatusCode.Redirect); redirect.Headers.Location = new Uri("https://evil.example/releases"); return Task.FromResult(redirect); }
-    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson.Replace("beta2", "beta3")) });
+    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson.Replace("beta2", "beta4")) });
 });
 using (var client = new HttpClient(fallbackHandler))
 {
     var checkedRelease = await new UpdateChecker(client, TimeSpan.FromSeconds(1)).CheckAsync("Asia/Shanghai");
-    if (checkedRelease?.Version != "beta3" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
+    if (checkedRelease?.Version != "beta4" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
 }
 var failureHandler = new UpdateFixtureHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)));
 using (var client = new HttpClient(failureHandler))
@@ -82,6 +82,8 @@ using (var sizeClient = new HttpClient(new SizeProbeFixture()))
     if (await MediaSizeProbe.GetSizeAsync(["https://example.test/fail", "https://example.test/video"], "BiliDesktop-Fixture/1.0", client: sizeClient) != 12345678) throw new Exception("Size probe did not try the backup URL");
     if (await MediaSizeProbe.GetSizeAsync("http://example.test/video", "fixture", client: sizeClient) is not null) throw new Exception("Insecure size URL accepted");
 }
+using (var canceledSizeClient = new HttpClient(new TimeoutHandler()))
+    if (await MediaSizeProbe.GetSizeAsync("https://example.test/video", "fixture", client: canceledSizeClient) is not null) throw new Exception("Canceled stream size request was not handled");
 var namingFixture = new VideoInfo("BV1xx411c7mD", "A: title", "author", "", [new(1, "P1 · first"), new(2, "P2 · second")], null, null);
 if (!DownloadNaming.NeedsFolder(namingFixture) || !DownloadNaming.Folder(Path.GetTempPath(), namingFixture).Contains("A_ title") || !DownloadNaming.BaseName(namingFixture, namingFixture.Pages[1], 2, new VideoStream(80, "avc1", 100, "https://example.test/v", []), null).Contains("002-P2 · second-1080P-avc1")) throw new Exception("Download naming or grouped folder failed");
 if (DownloadNaming.SafeComponent("CON") != "_CON" || DownloadNaming.SafeComponent("..").Contains("..")) throw new Exception("Unsafe download name accepted");
@@ -467,6 +469,18 @@ try
     if (Directory.Exists(badTarget) || Directory.EnumerateFiles(temporary, ".ffmpeg-download-*").Any()) throw new Exception("Bad download left installation files");
     try { await MediaTools.DownloadAndInstallAsync(null, badTarget, "https://example.test/package.zip", packageHash, new TimeoutHandler()); throw new Exception("Timed-out package accepted"); }
     catch (TimeoutException) { }
+    using (var firstCancel = new CancellationTokenSource())
+    using (var waitingCancel = new CancellationTokenSource())
+    {
+        var blocked = new BlockingPackageHandler();
+        var firstInstall = MediaTools.DownloadAndInstallAsync(null, Path.Combine(temporary, "blocked-tools"), "https://example.test/package.zip", packageHash, blocked, firstCancel.Token);
+        await blocked.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var waitingInstall = MediaTools.DownloadAndInstallAsync(null, Path.Combine(temporary, "waiting-tools"), "https://example.test/package.zip", packageHash, new PackageHandler(packageBytes), waitingCancel.Token);
+        waitingCancel.Cancel();
+        try { await waitingInstall.WaitAsync(TimeSpan.FromSeconds(5)); throw new Exception("Waiting for FFmpeg installation ignored cancellation"); } catch (OperationCanceledException) { }
+        firstCancel.Cancel();
+        try { await firstInstall.WaitAsync(TimeSpan.FromSeconds(5)); throw new Exception("FFmpeg download ignored cancellation"); } catch (OperationCanceledException) { }
+    }
     if (Directory.Exists(badTarget) || Directory.EnumerateFiles(temporary, ".ffmpeg-download-*").Any()) throw new Exception("Timeout left installation files");
     Console.WriteLine("FFmpeg package verification, atomic installation and concurrent installs passed.");
     File.Delete(packageFixture); File.Delete(incompletePackage); Directory.Delete(installFixture, true); Directory.Delete(networkTarget, true);
@@ -1421,6 +1435,17 @@ sealed class SlowMediaServer : IDisposable
 sealed class TimeoutHandler : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => throw new OperationCanceledException();
+}
+
+sealed class BlockingPackageHandler : HttpMessageHandler
+{
+    public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        Started.TrySetResult();
+        await Task.Delay(Timeout.Infinite, cancellationToken);
+        throw new InvalidOperationException("Unexpected package response");
+    }
 }
 
 sealed class PackageHandler(byte[] package) : HttpMessageHandler

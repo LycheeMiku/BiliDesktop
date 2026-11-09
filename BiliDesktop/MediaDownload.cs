@@ -57,7 +57,7 @@ public static class MediaDownload
             if (control is not null) await control.WaitIfPausedAsync();
             if (File.Exists(destination)) throw new IOException("目标文件已存在，请选择其他文件名。");
             progress.Report("正在刷新下载地址…");
-            var streams = await api.GetStreamsForPageAsync(bvid, page);
+            var streams = await api.GetStreamsForPageAsync(bvid, page, control?.Token ?? CancellationToken.None);
             if (control is not null) await control.WaitIfPausedAsync();
             if (api.SessionVersion != sessionVersion) throw new InvalidOperationException("登录会话已变化，请重新解析视频。");
             if (streams.IsPreview && !allowPreview) throw new InvalidOperationException("当前账号只能获取预览，请重新解析视频。");
@@ -121,10 +121,10 @@ public static class MediaDownload
         {
             control?.PrepareTransfer();
             if (control is not null) await control.WaitIfPausedAsync();
-            if (cover is null) { progress.Report("正在检查媒体工具…"); await ValidateMediaToolsAsync(progress); }
+            if (cover is null) { progress.Report("正在检查媒体工具…"); await ValidateMediaToolsAsync(progress, control?.Token ?? CancellationToken.None); }
             if (video is not null && processing != VideoProcessing.Copy) { progress.Report("正在检测所选编码器…"); await ValidateEncoderAsync(processing); }
             var options = CurrentOptions;
-            using var aria = await AriaSession.StartAsync(options.CacheMiB);
+            using var aria = await AriaSession.StartAsync(options.CacheMiB, control?.Token ?? CancellationToken.None);
             if (cover is not null)
             {
                 await aria.DownloadAsync([cover], work, "cover", progress, "封面", userAgent, options.Connections, control);
@@ -161,13 +161,13 @@ public static class MediaDownload
     {
         VideoProcessing.Nvenc => "h264_nvenc", VideoProcessing.Qsv => "h264_qsv", VideoProcessing.Amf => "h264_amf", VideoProcessing.Software => "libx264", _ => throw new ArgumentException("不支持的编码器。")
     };
-    internal static Task ValidateMediaToolsAsync(IProgress<string>? progress = null) =>
-        ValidateMediaToolsAsync(() => MediaTools.EnsureAsync(progress), executable => RunAsync(executable, ["-version"], TimeSpan.FromSeconds(10)));
+    internal static Task ValidateMediaToolsAsync(IProgress<string>? progress = null, CancellationToken cancellation = default) =>
+        ValidateMediaToolsAsync(() => MediaTools.EnsureAsync(progress, cancellation), executable => RunAsync(executable, ["-version"], TimeSpan.FromSeconds(10), cancellation));
 
     internal static async Task<bool> ValidateCompleteVideoAsync(string path, double? expectedDuration, CancellationToken cancellation)
     {
         if (!File.Exists(path) || new FileInfo(path).Length == 0) return false;
-        await ValidateMediaToolsAsync();
+        await ValidateMediaToolsAsync(cancellation: cancellation);
         try
         {
             var probe = await RunAsync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type:stream_disposition=attached_pic:format=duration", "-of", "json", path], TimeSpan.FromSeconds(30), cancellation);
@@ -296,11 +296,11 @@ public static class MediaDownload
         private AriaSession(Process process, int port, string secret, string config)
         {
             this.process = process; this.secret = secret; this.config = config;
-            http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}/jsonrpc"), Timeout = TimeSpan.FromSeconds(5) };
+            http = new HttpClient(new HttpClientHandler { UseProxy = false }) { BaseAddress = new Uri($"http://127.0.0.1:{port}/jsonrpc"), Timeout = TimeSpan.FromSeconds(5) };
             onExit = (_, _) => { try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { } };
             AppDomain.CurrentDomain.ProcessExit += onExit;
         }
-        public static async Task<AriaSession> StartAsync(int cacheMiB = 16)
+        public static async Task<AriaSession> StartAsync(int cacheMiB = 16, CancellationToken cancellation = default)
         {
             var executable = Path.Combine(AppContext.BaseDirectory, "vendor", "aria2", "aria2c.exe");
             if (!File.Exists(executable)) throw new FileNotFoundException("未找到 aria2c.exe。", executable);
@@ -309,7 +309,8 @@ public static class MediaDownload
             var secret = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
             var config = Path.Combine(Path.GetTempPath(), "bili-aria-" + Guid.NewGuid().ToString("N") + ".conf");
             if (cacheMiB is < 0 or > 512) throw new ArgumentOutOfRangeException(nameof(cacheMiB));
-            await File.WriteAllTextAsync(config, $"enable-rpc=true\nrpc-listen-all=false\nrpc-listen-port={port}\nrpc-secret={secret}\ndisk-cache={cacheMiB}M\n", new UTF8Encoding(false));
+            try { await File.WriteAllTextAsync(config, $"enable-rpc=true\nrpc-listen-all=false\nrpc-listen-port={port}\nrpc-secret={secret}\ndisk-cache={cacheMiB}M\n", new UTF8Encoding(false), cancellation); }
+            catch { try { File.Delete(config); } catch (IOException) { } throw; }
             var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             info.ArgumentList.Add("--conf-path=" + config);
             Process process;
@@ -319,22 +320,25 @@ public static class MediaDownload
             var session = new AriaSession(process, port, secret, config);
             try
             {
+                using var startupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                startupTimeout.CancelAfter(TimeSpan.FromSeconds(15));
                 for (var attempt = 0; attempt < 30; attempt++)
                 {
                     if (process.HasExited) throw new InvalidOperationException("aria2 启动失败。");
-                    try { await session.CallAsync("aria2.getVersion", []); File.Delete(config); return session; }
-                    catch (HttpRequestException) { await Task.Delay(200); }
+                    try { await session.CallAsync("aria2.getVersion", [], startupTimeout.Token); File.Delete(config); return session; }
+                    catch (HttpRequestException) { await Task.Delay(200, startupTimeout.Token); }
                 }
                 throw new TimeoutException("aria2 启动超时。");
             }
+            catch (OperationCanceledException ex) when (!cancellation.IsCancellationRequested) { session.Dispose(); throw new TimeoutException("aria2 启动超时。", ex); }
             catch { session.Dispose(); throw; }
         }
-        internal async Task<JsonElement> CallAsync(string method, object[] args)
+        internal async Task<JsonElement> CallAsync(string method, object[] args, CancellationToken cancellation = default)
         {
             var body = JsonSerializer.Serialize(new { jsonrpc = "2.0", id = "1", method, @params = new object[] { "token:" + secret }.Concat(args).ToArray() });
-            using var response = await http.PostAsync("", new StringContent(body, Encoding.UTF8, "application/json"));
+            using var response = await http.PostAsync("", new StringContent(body, Encoding.UTF8, "application/json"), cancellation);
             response.EnsureSuccessStatusCode();
-            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation));
             if (json.RootElement.TryGetProperty("error", out var error)) throw new InvalidOperationException("aria2：" + error.GetProperty("message").GetString());
             return json.RootElement.GetProperty("result").Clone();
         }
@@ -344,18 +348,20 @@ public static class MediaDownload
         internal static Dictionary<string, object> MakeOptions(string directory, string name, string userAgent, int connections)
         {
             if (connections is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(connections));
-            return new Dictionary<string, object> { ["dir"] = directory, ["out"] = name, ["split"] = connections.ToString(), ["max-connection-per-server"] = Math.Min(connections, 16).ToString(), ["min-split-size"] = "1M", ["referer"] = "https://www.bilibili.com/", ["user-agent"] = userAgent, ["max-tries"] = "3", ["allow-overwrite"] = "false" };
+            return new Dictionary<string, object> { ["dir"] = directory, ["out"] = name, ["split"] = connections.ToString(), ["max-connection-per-server"] = Math.Min(connections, 16).ToString(), ["min-split-size"] = "1M", ["referer"] = "https://www.bilibili.com/", ["user-agent"] = userAgent, ["max-tries"] = "3", ["connect-timeout"] = "15", ["timeout"] = "30", ["allow-overwrite"] = "false" };
         }
         internal Task<JsonElement> GlobalOptionsAsync() => CallAsync("aria2.getGlobalOption", []);
         public async Task DownloadAsync(IReadOnlyList<string> urls, string directory, string name, IProgress<string> progress, string label, string userAgent = BiliApi.DefaultUserAgent, int connections = 8, TransferControl? control = null)
         {
             if (control is not null) await control.WaitIfPausedAsync();
             var options = MakeOptions(directory, name, userAgent, connections);
-            var gid = (await CallAsync("aria2.addUri", [urls, options])).GetString()!;
+            var token = control?.Token ?? CancellationToken.None;
+            var gid = (await CallAsync("aria2.addUri", [urls, options], token)).GetString()!;
+            var lastProgress = Stopwatch.StartNew(); long lastBytes = -1;
             while (true)
             {
                 if (process.HasExited) throw new InvalidOperationException("aria2 意外退出。");
-                var status = await CallAsync("aria2.tellStatus", [gid]);
+                var status = await CallAsync("aria2.tellStatus", [gid], token);
                 var state = status.GetProperty("status").GetString();
                 if (state == "complete") return;
                 if (state is "error" or "removed") throw new InvalidOperationException(status.TryGetProperty("errorMessage", out var msg) ? msg.GetString() : "下载失败");
@@ -363,15 +369,17 @@ public static class MediaDownload
                 {
                     if (state != "paused")
                     {
-                        try { await CallAsync("aria2.pause", [gid]); }
-                        catch (InvalidOperationException) { var latest = await CallAsync("aria2.tellStatus", [gid]); if (latest.GetProperty("status").GetString() == "complete") return; throw; }
+                        try { await CallAsync("aria2.pause", [gid], token); }
+                        catch (InvalidOperationException) { var latest = await CallAsync("aria2.tellStatus", [gid], token); if (latest.GetProperty("status").GetString() == "complete") return; throw; }
                     }
                     await control.WaitAfterPauseAsync();
-                    await CallAsync("aria2.unpause", [gid]);
+                    await CallAsync("aria2.unpause", [gid], token); lastProgress.Restart();
                     continue;
                 }
                 control?.Token.ThrowIfCancellationRequested();
                 var current = long.Parse(status.GetProperty("completedLength").GetString()!);
+                if (current > lastBytes) { lastBytes = current; lastProgress.Restart(); }
+                else if (lastProgress.Elapsed > TimeSpan.FromMinutes(2)) throw new TimeoutException("下载长时间没有进度，请检查网络后重试。");
                 var total = long.Parse(status.GetProperty("totalLength").GetString()!);
                 var speed = status.TryGetProperty("downloadSpeed", out var speedValue) && long.TryParse(speedValue.GetString(), out var parsedSpeed) ? parsedSpeed : 0;
                 var activeConnections = status.TryGetProperty("connections", out var connectionValue) && int.TryParse(connectionValue.GetString(), out var parsedConnections) ? parsedConnections : 0;

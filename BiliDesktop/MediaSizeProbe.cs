@@ -31,6 +31,6 @@ public static class MediaSizeProbe
             if (!response.IsSuccessStatusCode) return null;
             return response.Content.Headers.ContentRange?.Length ?? (response.StatusCode == System.Net.HttpStatusCode.OK ? response.Content.Headers.ContentLength : null);
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException) { return null; }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException) { return null; }
     }
 }

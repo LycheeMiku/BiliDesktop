@@ -38,6 +38,7 @@ internal sealed class BackgroundWindowController(Window window, Func<string, str
     }
 
     internal void RequestOpen() => window.Dispatcher.BeginInvoke(Restore);
+    internal void RestoreForActivation() => Restore();
     internal void RequestAbout() { if (showAbout is not null) window.Dispatcher.BeginInvoke(showAbout); }
     internal void RequestExit() => window.Dispatcher.BeginInvoke(() => { Restore(); if (exit is null) window.Close(); else exit(); });
 

@@ -16,7 +16,7 @@ public static class AppSettings
     public static void SaveUserAgent(string ua)
     {
         var options = LoadTransferOptions();
-        Save(ua, options, LoadLanguage(), LoadDownloadDirectory(), LoadAllowBackground());
+        SaveAll(ua, options, LoadLanguage(), LoadDownloadDirectory(), LoadAllowBackground(), LoadUseDefaultVideoDirectory());
     }
     public static TransferOptions LoadTransferOptions()
     {
@@ -27,7 +27,12 @@ public static class AppSettings
         var maximum = data.RootElement.TryGetProperty("maxConcurrentTasks", out var m) && m.TryGetInt32(out var mv) ? mv : 4;
         return new(split, cache, maximum);
     }
-    public static void SaveTransferOptions(TransferOptions options) => Save(LoadUserAgent(), options, LoadLanguage(), LoadDownloadDirectory(), LoadAllowBackground());
+    public static void SaveTransferOptions(TransferOptions options) => SaveAll(LoadUserAgent(), options, LoadLanguage(), LoadDownloadDirectory(), LoadAllowBackground(), LoadUseDefaultVideoDirectory());
+    public static string IndependentDownloadDirectory()
+    {
+        var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        return string.IsNullOrWhiteSpace(videos) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : videos;
+    }
     public static string LoadDownloadDirectory()
     {
         if (File.Exists(FileName))
@@ -35,13 +40,12 @@ public static class AppSettings
             using var data = JsonDocument.Parse(File.ReadAllText(FileName));
             if (data.RootElement.TryGetProperty("downloadDirectory", out var path) && path.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(path.GetString())) return path.GetString()!;
         }
-        var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-        return string.IsNullOrWhiteSpace(videos) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : videos;
+        return IndependentDownloadDirectory();
     }
     public static void SaveDownloadDirectory(string path)
     {
         if (!Directory.Exists(path)) throw new DirectoryNotFoundException("下载目录不存在。");
-        Save(LoadUserAgent(), LoadTransferOptions(), LoadLanguage(), Path.GetFullPath(path), LoadAllowBackground());
+        SaveAll(LoadUserAgent(), LoadTransferOptions(), LoadLanguage(), Path.GetFullPath(path), LoadAllowBackground(), LoadUseDefaultVideoDirectory());
     }
     public static string LoadLanguage()
     {
@@ -53,7 +57,7 @@ public static class AppSettings
     public static void SaveLanguage(string language)
     {
         if (language is not ("zh-CN" or "zh-TW" or "en")) throw new ArgumentException("Unsupported language.");
-        Save(LoadUserAgent(), LoadTransferOptions(), language, LoadDownloadDirectory(), LoadAllowBackground());
+        SaveAll(LoadUserAgent(), LoadTransferOptions(), language, LoadDownloadDirectory(), LoadAllowBackground(), LoadUseDefaultVideoDirectory());
     }
     public static bool LoadAllowBackground()
     {
@@ -61,12 +65,18 @@ public static class AppSettings
         using var data = JsonDocument.Parse(File.ReadAllText(FileName));
         return data.RootElement.TryGetProperty("allowBackground", out var value) && value.ValueKind == JsonValueKind.True;
     }
-    public static void SaveAllowBackground(bool enabled) => Save(LoadUserAgent(), LoadTransferOptions(), LoadLanguage(), LoadDownloadDirectory(), enabled);
-    private static void Save(string ua, TransferOptions options, string language, string directory, bool allowBackground)
+    public static void SaveAllowBackground(bool enabled) => SaveAll(LoadUserAgent(), LoadTransferOptions(), LoadLanguage(), LoadDownloadDirectory(), enabled, LoadUseDefaultVideoDirectory());
+    public static bool LoadUseDefaultVideoDirectory()
+    {
+        if (!File.Exists(FileName)) return true;
+        using var data = JsonDocument.Parse(File.ReadAllText(FileName));
+        return !data.RootElement.TryGetProperty("useDefaultVideoDirectory", out var value) || value.ValueKind != JsonValueKind.False;
+    }
+    public static void SaveAll(string ua, TransferOptions options, string language, string directory, bool allowBackground, bool useDefaultVideoDirectory)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(FileName)!);
         var temporary = FileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try { File.WriteAllText(temporary, JsonSerializer.Serialize(new { userAgent = ua, connections = options.Connections, cacheMiB = options.CacheMiB, maxConcurrentTasks = options.MaxConcurrentTasks, language, downloadDirectory = directory, allowBackground })); File.Move(temporary, FileName, true); }
+        try { File.WriteAllText(temporary, JsonSerializer.Serialize(new { userAgent = ua, connections = options.Connections, cacheMiB = options.CacheMiB, maxConcurrentTasks = options.MaxConcurrentTasks, language, downloadDirectory = directory, allowBackground, useDefaultVideoDirectory })); File.Move(temporary, FileName, true); }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 }

@@ -27,6 +27,26 @@ public static class Localizer
 更新检查失败|更新檢查失敗|Update check failed
 更新检查失败，请检查网络连接后重试。|更新檢查失敗，請檢查網路連線後重試。|Update check failed. Check the network connection and try again.
 关闭|關閉|Close
+设置|設定|Settings
+程序已在运行，但无法唤醒现有窗口。请稍后重试，或从托盘退出后重新启动。|程式已在執行，但無法喚醒現有視窗。請稍後重試，或從系統匣結束後重新啟動。|The application is already running, but its window could not be restored. Try again later or exit it from the system tray.
+无法检查程序是否已运行：|無法檢查程式是否已在執行：|Unable to check whether the application is running:
+使用默认视频下载目录（关闭后每次询问）|使用預設影片下載目錄（關閉後每次詢問）|Use default video folder (otherwise ask each time)
+设置已应用。|設定已套用。|Settings applied.
+设置失败：|設定失敗：|Settings failed:
+确定|確定|OK
+取消|取消|Cancel
+常规|一般|General
+下载设置|下載設定|Download settings
+语言|語言|Language
+内存缓存（MiB）|記憶體快取（MiB）|Memory cache (MiB)
+输入视频链接、BV 或 AV 号|輸入影片連結、BV 或 AV 號|Enter a video link, BV or AV ID
+完成 {0}，失败 {1}，已停止 {2}|完成 {0}，失敗 {1}，已停止 {2}|Completed {0}, failed {1}, stopped {2}
+批量任务失败：|批次工作失敗：|Batch failed:
+等待读取视频信息…|等待讀取影片資訊…|Waiting to read video information…
+等待准备 FFmpeg…|等待準備 FFmpeg…|Waiting for FFmpeg preparation…
+正在获取视频下载地址…|正在取得影片下載網址…|Fetching video download URLs…
+请求哔哩哔哩接口超时，请检查网络后重试。|請求哔哩哔哩介面逾時，請檢查網路後重試。|The Bilibili request timed out. Check the network and retry.
+下载长时间没有进度，请检查网络后重试。|下載長時間沒有進度，請檢查網路後重試。|The download made no progress for too long. Check the network and retry.
 删除备份规则|刪除備份規則|Delete backup rules
 确定删除所选的 {0} 条备份规则？|確定刪除所選的 {0} 條備份規則？|Delete the {0} selected backup rules?
 将停止所选的 {0} 条规则，不再添加任务，并取消其等待中和正在进行的下载。请选择对已下载文件的处理方式。|將停止所選的 {0} 條規則，不再新增工作，並取消其等待中和正在進行的下載。請選擇如何處理已下載的檔案。|The {0} selected rules will stop adding tasks, and their queued and active downloads will be canceled. Choose how to handle downloaded files.

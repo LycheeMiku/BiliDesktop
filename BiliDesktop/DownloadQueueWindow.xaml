@@ -5,7 +5,7 @@
       <DataGrid.Columns>
         <DataGridTemplateColumn Width="45"><DataGridTemplateColumn.Header><CheckBox x:Name="SelectAll" Click="SelectAll_Click" HorizontalAlignment="Center"/></DataGridTemplateColumn.Header><DataGridTemplateColumn.CellTemplate><DataTemplate><CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Click="Check_Click" HorizontalAlignment="Center" VerticalAlignment="Center"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
         <DataGridTextColumn x:Name="NameColumn" Binding="{Binding Title}" Width="2*"/>
-        <DataGridTextColumn x:Name="StatusColumn" Binding="{Binding StateText}" Width="85"/>
+        <DataGridTextColumn x:Name="StatusColumn" Binding="{Binding StateText}" Width="200"/>
         <DataGridTemplateColumn x:Name="ProgressColumn" Width="120"><DataGridTemplateColumn.CellTemplate><DataTemplate><ProgressBar Value="{Binding Percent, Mode=OneWay}" Minimum="0" Maximum="100" Height="14"/></DataTemplate></DataGridTemplateColumn.CellTemplate></DataGridTemplateColumn>
         <DataGridTextColumn x:Name="BytesColumn" Binding="{Binding ProgressText}" Width="170"/>
         <DataGridTextColumn x:Name="SpeedColumn" Binding="{Binding Speed}" Width="100"/>

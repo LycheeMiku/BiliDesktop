@@ -87,7 +87,11 @@ public sealed class BiliApi
         if (guestBuvid.Length > 0 && !cookie.Split(';').Any(c => c.TrimStart().StartsWith("buvid3=", StringComparison.Ordinal)))
             requestCookie = string.IsNullOrEmpty(cookie) ? "buvid3=" + guestBuvid : cookie + "; buvid3=" + guestBuvid;
         if (requestCookie.Length > 0) request.Headers.TryAddWithoutValidation("Cookie", requestCookie);
-        using var response = await http.SendAsync(request, cancellation);
+        HttpResponseMessage response;
+        try { response = await http.SendAsync(request, cancellation); }
+        catch (OperationCanceledException ex) when (!cancellation.IsCancellationRequested) { throw new TimeoutException("请求哔哩哔哩接口超时，请检查网络后重试。", ex); }
+        using (response)
+        {
         if ((int)response.StatusCode == 412) throw new InvalidOperationException("请求被平台拦截（HTTP 412）；请检查网络或登录状态后重试。");
         response.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellation));
@@ -95,6 +99,7 @@ public sealed class BiliApi
         var code = root.GetProperty("code").GetInt32();
         if (code != 0 && !(allowAnonymousNav && code == -101)) throw new InvalidOperationException($"接口错误 {code}：" + (root.TryGetProperty("message", out var msg) ? msg.ToString() : "未知错误"));
         return root.GetProperty(rootProperty).Clone();
+        }
     }
 
     public async Task<string> GetAccountAsync()
@@ -412,13 +417,13 @@ public sealed class BiliApi
         return new VideoInfo(pages[0].Bvid!, title, "番剧", cover, pages, null, null);
     }
 
-    public async Task<VideoInfo> GetVideoAsync(string input)
+    public async Task<VideoInfo> GetVideoAsync(string input, CancellationToken cancellation = default)
     {
         var isAvid = TryParseAvid(input, out var aid);
         var bvid = isAvid ? null : ExtractBvid(input);
-        await EnsureDeviceAsync();
+        await EnsureDeviceAsync(cancellation);
         var query = isAvid ? $"aid={aid}" : $"bvid={Uri.EscapeDataString(bvid!)}";
-        var data = await GetAsync($"https://api.bilibili.com/x/web-interface/view?{query}");
+        var data = await GetAsync($"https://api.bilibili.com/x/web-interface/view?{query}", cancellation: cancellation);
         if (isAvid)
         {
             bvid = data.TryGetProperty("bvid", out var bvValue) && bvValue.ValueKind == JsonValueKind.String ? bvValue.GetString() : null;
@@ -532,9 +537,9 @@ public sealed class BiliApi
         throw new InvalidOperationException("投稿数量超过当前分页上限，未读取完整列表。");
     }
 
-    private async Task<string> SignQueryAsync(IDictionary<string, string> values)
+    private async Task<string> SignQueryAsync(IDictionary<string, string> values, CancellationToken cancellation = default)
     {
-        var nav = await GetAsync("https://api.bilibili.com/x/web-interface/nav", allowAnonymousNav: true);
+        var nav = await GetAsync("https://api.bilibili.com/x/web-interface/nav", allowAnonymousNav: true, cancellation: cancellation);
         var wbi = nav.GetProperty("wbi_img");
         string stem(string name) => Path.GetFileNameWithoutExtension(new Uri(wbi.GetProperty(name).GetString()!).AbsolutePath);
         var raw = stem("img_url") + stem("sub_url");
@@ -551,10 +556,10 @@ public sealed class BiliApi
         return $"{query}&w_rid={signature}";
     }
 
-    private async Task EnsureDeviceAsync()
+    private async Task EnsureDeviceAsync(CancellationToken cancellation = default)
     {
         if (guestBuvid.Length != 0 || cookie.Split(';').Any(c => c.TrimStart().StartsWith("buvid3=", StringComparison.Ordinal))) return;
-        var fingerprint = await GetAsync("https://api.bilibili.com/x/frontend/finger/spi");
+        var fingerprint = await GetAsync("https://api.bilibili.com/x/frontend/finger/spi", cancellation: cancellation);
         var candidate = fingerprint.GetProperty("b_3").GetString() ?? "";
         if (candidate.Length == 0 || candidate.Any(c => c < 33 || c > 126 || c is ';' or ',')) throw new InvalidOperationException("平台返回的设备标识无效。");
         guestBuvid = candidate;
@@ -624,33 +629,33 @@ public sealed class BiliApi
         return output.ToArray();
     }
 
-    public async Task<MediaStreams> GetStreamsForPageAsync(string bvid, VideoPage page)
+    public async Task<MediaStreams> GetStreamsForPageAsync(string bvid, VideoPage page, CancellationToken cancellation = default)
     {
         if (!page.Available) throw new InvalidOperationException("当前账号无权观看该课程分集。");
         var actualBvid = page.Bvid ?? bvid;
-        var streams = await GetStreamsAsync(actualBvid, page.Cid, page.EpisodeId, page.CourseAid);
+        var streams = await GetStreamsAsync(actualBvid, page.Cid, page.EpisodeId, page.CourseAid, cancellation);
         if (!page.CheckPaidPreview || streams.IsPreview) return streams;
-        var query = await SignQueryAsync(new Dictionary<string, string> { ["bvid"] = actualBvid, ["cid"] = page.Cid.ToString() });
-        var player = await GetAsync("https://api.bilibili.com/x/player/wbi/v2?" + query);
+        var query = await SignQueryAsync(new Dictionary<string, string> { ["bvid"] = actualBvid, ["cid"] = page.Cid.ToString() }, cancellation);
+        var player = await GetAsync("https://api.bilibili.com/x/player/wbi/v2?" + query, cancellation: cancellation);
         if (!player.TryGetProperty("is_ugc_pay_preview", out var preview) || preview.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             throw new InvalidOperationException("无法确认付费视频是否为试看，请稍后重试。");
         return streams with { IsPreview = preview.GetBoolean() };
     }
 
-    public async Task<MediaStreams> GetStreamsAsync(string bvid, long cid, long? episodeId = null, long? courseAid = null)
+    public async Task<MediaStreams> GetStreamsAsync(string bvid, long cid, long? episodeId = null, long? courseAid = null, CancellationToken cancellation = default)
     {
         JsonElement data;
         if (courseAid.HasValue)
         {
             if (courseAid <= 0 || !episodeId.HasValue || episodeId <= 0 || cid <= 0) throw new ArgumentException("课程分集标识无效。");
-            data = await GetAsync($"https://api.bilibili.com/pugv/player/web/playurl?avid={courseAid.Value}&ep_id={episodeId.Value}&cid={cid}&fnval=4048&fourk=1&qn=127");
+            data = await GetAsync($"https://api.bilibili.com/pugv/player/web/playurl?avid={courseAid.Value}&ep_id={episodeId.Value}&cid={cid}&fnval=4048&fourk=1&qn=127", cancellation: cancellation);
         }
         else if (episodeId.HasValue)
-            data = await GetAsync($"https://api.bilibili.com/pgc/player/web/playurl?ep_id={episodeId.Value}&cid={cid}&fnval=4048&fourk=1&qn=127", rootProperty: "result");
+            data = await GetAsync($"https://api.bilibili.com/pgc/player/web/playurl?ep_id={episodeId.Value}&cid={cid}&fnval=4048&fourk=1&qn=127", rootProperty: "result", cancellation: cancellation);
         else
         {
-            var query = await SignQueryAsync(new Dictionary<string, string> { ["bvid"] = bvid, ["cid"] = cid.ToString(), ["fnval"] = "4048", ["fourk"] = "1", ["qn"] = "127" });
-            data = await GetAsync($"https://api.bilibili.com/x/player/wbi/playurl?{query}");
+            var query = await SignQueryAsync(new Dictionary<string, string> { ["bvid"] = bvid, ["cid"] = cid.ToString(), ["fnval"] = "4048", ["fourk"] = "1", ["qn"] = "127" }, cancellation);
+            data = await GetAsync($"https://api.bilibili.com/x/player/wbi/playurl?{query}", cancellation: cancellation);
         }
         static bool flag(JsonElement root, string name) => root.TryGetProperty(name, out var value) && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number != 0);
         if (flag(data, "is_drm")) throw new InvalidOperationException("该内容使用当前版本不支持的 DRM 保护。");

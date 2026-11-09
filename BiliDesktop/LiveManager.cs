@@ -292,9 +292,10 @@ public sealed class LiveManager : IDisposable
         catch (Exception ex) { throw new InvalidOperationException("获取直播间信息失败：" + RecorderErrorSink.DescribeError(ex)); }
         if (string.IsNullOrWhiteSpace(room.Name)) throw new InvalidOperationException(LastError ?? "无法获取直播间信息，请检查房间号、网络或登录状态。");
     }
-    public async Task StartAsync(Guid id)
+    public async Task StartAsync(Guid id, Func<bool>? canStart = null)
     {
         await RefreshAsync(id);
+        if (canStart is not null && !canStart()) return;
         var room = Find(id);
         if (!room.Streaming) throw new InvalidOperationException("直播间当前未开播。");
         room.StartRecord();

@@ -7,6 +7,7 @@ namespace BiliDesktop;
 
 public partial class BatchWindow : Window
 {
+    private static readonly SemaphoreSlim MetadataGate = new(4, 4);
     private readonly BiliApi api;
     private readonly VideoStream? preferredVideo;
     private readonly AudioStream? preferredAudio;
@@ -44,8 +45,9 @@ public partial class BatchWindow : Window
         var dialog = new OpenFolderDialog { Title = "选择下载目录", Multiselect = false };
         if (dialog.ShowDialog() == true) DirectoryBox.Text = dialog.FolderName;
     }
-    private void SelectAll_Click(object sender, RoutedEventArgs e) { foreach (var job in jobs) job.Selected = true; Jobs.Items.Refresh(); }
-    private void SelectNone_Click(object sender, RoutedEventArgs e) { foreach (var job in jobs) job.Selected = false; Jobs.Items.Refresh(); }
+    private void CommitJobEdit() { Jobs.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Cell, true); Jobs.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Row, true); }
+    private void SelectAll_Click(object sender, RoutedEventArgs e) { CommitJobEdit(); foreach (var job in jobs) job.Selected = true; Jobs.Items.Refresh(); }
+    private void SelectNone_Click(object sender, RoutedEventArgs e) { CommitJobEdit(); foreach (var job in jobs) job.Selected = false; Jobs.Items.Refresh(); }
     private void Queue_Click(object sender, RoutedEventArgs e) => WindowCoordinator.ShowDownloads(taskQueue);
     private void Mode_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e) { if (AudioOptions is not null && Mode is not null) AudioOptions.Visibility = Mode.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed; }
     private void Stop_Click(object sender, RoutedEventArgs e) { cancellation?.Cancel(); Stop.IsEnabled = false; Summary.Text = "已停止排队，正在等待已开始的任务…"; }
@@ -59,8 +61,7 @@ public partial class BatchWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
-        Jobs.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Cell, true);
-        Jobs.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Row, true);
+        CommitJobEdit();
         var chosen = jobs.Where(j => j.Selected).ToArray();
         if (chosen.Length == 0) { Summary.Text = "请至少选择一个条目。"; return; }
         if (favoriteFolder is not null && api.SessionVersion != favoriteSession) { Summary.Text = "登录会话已变化，请重新读取收藏夹。"; return; }
@@ -103,7 +104,14 @@ public partial class BatchWindow : Window
                     job.HasError = false; job.OutputPath = null;
                     var capturedSession = api.SessionVersion;
                     var metadata = groupVideo;
-                    if (job.Page is null) { job.Status = "正在读取视频分 P…"; metadata = await api.GetVideoAsync(job.Bvid); }
+                    if (job.Page is null)
+                    {
+                        job.Status = "等待读取视频信息…";
+                        await MetadataGate.WaitAsync(token.Token);
+                        try { job.Status = "正在读取视频分 P…"; metadata = await api.GetVideoAsync(job.Bvid, token.Token); }
+                        finally { MetadataGate.Release(); }
+                    }
+                    token.Token.ThrowIfCancellationRequested();
                     if (api.SessionVersion != capturedSession) throw new InvalidOperationException("登录会话已变化，请重新解析视频。");
                     var parts = job.Page is null ? metadata!.Pages.Select((page, index) => new BatchJob { Number = index + 1, Bvid = page.Bvid ?? job.Bvid, Label = page.Label, Page = page, CollectionTitle = job.CollectionTitle, CollectionNumber = job.CollectionNumber, CollectionItemTitle = job.CollectionItemTitle }).ToArray() : [job];
                     if (parts.Length == 0) throw new InvalidOperationException("视频没有可用的分 P。");
@@ -112,6 +120,7 @@ public partial class BatchWindow : Window
                     var completed = 0; var skipped = 0; var failed = 0;
                     foreach (var part in parts)
                     {
+                        token.Token.ThrowIfCancellationRequested();
                         var entry = taskQueue.Enqueue((metadata?.Title ?? job.Label) + " · " + part.Label, targetDirectory, async (control, progress) =>
                         {
                             if (api.SessionVersion != capturedSession) throw new InvalidOperationException("登录会话已变化，请重新解析视频。");
@@ -131,6 +140,7 @@ public partial class BatchWindow : Window
                     }
                     if (job.Page is null) { job.HasError = failed > 0; job.Finished = true; }
                 }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { job.Finished = true; job.Status = "已停止排队"; }
                 catch (Exception ex) { job.HasError = true; job.Finished = true; job.Status = "失败：" + ex.Message; }
             }, job => { job.Status = "已停止排队"; job.Finished = true; }, token.Token);
         }
@@ -139,9 +149,17 @@ public partial class BatchWindow : Window
         {
             cancellation = null; SetRunning(false);
             Summary.Text = schedulerError is null
-                ? $"完成 {chosen.Count(j => j.Status.StartsWith("完成", StringComparison.Ordinal))} / {chosen.Length}，其余项目可查看状态后重试。"
-                : "批量任务失败：" + schedulerError;
+                ? BatchSummary(chosen)
+                : Localizer.Translate("批量任务失败：") + schedulerError;
         }
+    }
+
+    internal static string BatchSummary(IReadOnlyList<BatchJob> jobs)
+    {
+        var failed = jobs.Count(j => j.HasError);
+        var stopped = jobs.Count(j => !j.HasError && j.Status is ("已停止排队" or "已取消"));
+        var completed = jobs.Count - failed - stopped;
+        return string.Format(Localizer.Translate("完成 {0}，失败 {1}，已停止 {2}"), completed, failed, stopped);
     }
 
 }

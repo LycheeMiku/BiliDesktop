@@ -8,10 +8,34 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--instance-probe")
+        {
+            using var probe = new SingleInstance(args[1]);
+            Environment.ExitCode = !probe.IsPrimary && probe.NotifyPrimary(TimeSpan.FromSeconds(5)) ? 0 : 2;
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--instance-hold")
+        {
+            using var holder = new SingleInstance(args[1]);
+            Console.WriteLine(holder.IsPrimary ? "READY" : "FAILED"); Console.Out.Flush();
+            if (holder.IsPrimary) Thread.Sleep(Timeout.Infinite);
+            return;
+        }
+        TestSingleInstanceProcesses();
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Resources["StatusConverter"] = new LocalizedStatusConverter();
         Localizer.Apply("en");
         SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+        if (args.Contains("--preview-main") || args.Contains("--preview-results"))
+        {
+            var previewRoot = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "bili-layout-preview-" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(previewRoot); AppSettings.FileNameOverride = System.IO.Path.Combine(previewRoot, "settings.json");
+            Localizer.Apply(args.Contains("--preview-compact") ? "en" : "zh-CN");
+            var preview = new MainWindow(new BiliApi(new MainWindowApiFixture()), false);
+            if (args.Contains("--preview-compact")) { preview.Width = 780; preview.Height = 520; }
+            if (args.Contains("--preview-results")) preview.Loaded += async (_, _) => await preview.ParseVideoAsync("BV1xx411c7mD");
+            app.ShutdownMode = ShutdownMode.OnMainWindowClose; app.MainWindow = preview; app.Run(preview); return;
+        }
         var uaApi = new BiliApi();
         foreach (var preset in UserAgentPresets.All)
         {
@@ -34,6 +58,8 @@ internal static class Program
             TestUpdateWindows(args.Contains("--render-update"));
             var apiFixture = new MainWindowApiFixture(); var fixtureApi = new BiliApi(apiFixture);
             var mainWindow = new MainWindow(fixtureApi, false) { ShowInTaskbar = false, ShowActivated = false };
+            if (mainWindow.FindName("Connections") is not null || ((System.Windows.FrameworkElement)mainWindow.FindName("ResultsPanel")).Visibility != Visibility.Collapsed || ((System.Windows.Controls.Expander)mainWindow.FindName("AccountExpander")).IsExpanded || !Equals(((System.Windows.Controls.Button)mainWindow.FindName("LiveButton")).Content, Localizer.Translate("直播录制"))) throw new Exception("Main window initially exposes settings, results or an incorrectly named live action");
+            if (System.Windows.Controls.Grid.GetRow((System.Windows.FrameworkElement)mainWindow.FindName("Navigation")) == System.Windows.Controls.Grid.GetRow((System.Windows.FrameworkElement)mainWindow.FindName("ParseBar"))) throw new Exception("Navigation and video parsing were not separated");
             var audioOptions = (AudioOptionsControl)mainWindow.FindName("AudioOptions");
             var downloadMode = (System.Windows.Controls.ComboBox)mainWindow.FindName("DownloadMode");
             if (audioOptions.Visibility != Visibility.Collapsed) throw new Exception("Audio metadata options should be hidden for video");
@@ -46,28 +72,61 @@ internal static class Program
             if (audioOptions.Options != new AudioMetadataOptions(true, true, true, true)) throw new Exception("Individual audio metadata controls were not captured");
             downloadMode.SelectedIndex = 0;
             if (audioOptions.Visibility != Visibility.Collapsed) throw new Exception("Audio metadata options remained visible for video");
-            var maxTasks = (System.Windows.Controls.TextBox)mainWindow.FindName("MaxTasks");
-            var unlimitedTasks = (System.Windows.Controls.CheckBox)mainWindow.FindName("UnlimitedTasks");
-            var applyTransfer = typeof(MainWindow).GetMethod("ApplyTransfer_Click", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var settingsWindow = mainWindow.ShowSettings() ?? throw new Exception("Settings not shown");
+            if (!ReferenceEquals(settingsWindow, mainWindow.ShowSettings()) || !settingsWindow.Topmost || settingsWindow.ResizeMode != ResizeMode.NoResize || mainWindow.IsEnabled) throw new Exception("Settings window was duplicated or blocks other windows");
+            if (!ReferenceEquals(settingsWindow, mainWindow.ShowSettings())) throw new Exception("Settings window duplicated");
+            var language = (System.Windows.Controls.ComboBox)settingsWindow.FindName("LanguageSelector");
+            language.SelectedIndex = 1; Pump();
+            if (AppSettings.LoadLanguage() != "en") throw new Exception("Language applied before confirmation");
+            if (!settingsWindow.ApplySettings()) throw new Exception("Settings apply failed");
+            if (AppSettings.LoadLanguage() != "zh-TW" || !Equals(((System.Windows.Controls.Button)mainWindow.FindName("LiveButton")).Content, Localizer.Translate("直播录制"))) throw new Exception("Settings did not update language across windows");
+            language.SelectedIndex = 2; if (!settingsWindow.ApplySettings()) throw new Exception("Settings apply failed"); Pump();
+            var maxTasks = (System.Windows.Controls.TextBox)settingsWindow.FindName("MaxTasks");
+            var unlimitedTasks = (System.Windows.Controls.CheckBox)settingsWindow.FindName("UnlimitedTasks");
             if (maxTasks.Text != "4" || unlimitedTasks.IsChecked == true) throw new Exception("Legacy settings did not use the original concurrency limit");
-            maxTasks.Text = "7"; applyTransfer.Invoke(mainWindow, [mainWindow, new RoutedEventArgs()]);
+            maxTasks.Text = "7"; settingsWindow.ApplySettings();
             if (AppSettings.LoadTransferOptions().MaxConcurrentTasks != 7 || MediaDownload.CurrentOptions.MaxConcurrentTasks != 7) throw new Exception("Custom concurrency was not applied and saved");
-            unlimitedTasks.IsChecked = true; applyTransfer.Invoke(mainWindow, [mainWindow, new RoutedEventArgs()]);
+            unlimitedTasks.IsChecked = true; settingsWindow.ApplySettings();
             if (maxTasks.IsEnabled || AppSettings.LoadTransferOptions().MaxConcurrentTasks != 0 || MediaDownload.CurrentOptions.MaxConcurrentTasks != 0) throw new Exception("Unlimited concurrency was not applied and saved");
-            unlimitedTasks.IsChecked = false; maxTasks.Text = "0"; applyTransfer.Invoke(mainWindow, [mainWindow, new RoutedEventArgs()]);
+            unlimitedTasks.IsChecked = false; maxTasks.Text = "0"; settingsWindow.ApplySettings();
             if (MediaDownload.CurrentOptions.MaxConcurrentTasks != 0 || AppSettings.LoadTransferOptions().MaxConcurrentTasks != 0) throw new Exception("Invalid limit overwrote settings");
-            maxTasks.Text = "4"; applyTransfer.Invoke(mainWindow, [mainWindow, new RoutedEventArgs()]);
+            maxTasks.Text = "4"; settingsWindow.ApplySettings();
             PumpUntil(mainWindow.ParseVideoAsync("BV1xx411c7mD"));
+            if (((System.Windows.FrameworkElement)mainWindow.FindName("ResultsPanel")).Visibility != Visibility.Visible || ((System.Windows.FrameworkElement)mainWindow.FindName("EmptyState")).Visibility != Visibility.Collapsed) throw new Exception("Parsing did not reveal the video controls");
             var pages = (System.Windows.Controls.ComboBox)mainWindow.FindName("Pages");
             var qualities = (System.Windows.Controls.ComboBox)mainWindow.FindName("Qualities");
             var codecs = (System.Windows.Controls.ComboBox)mainWindow.FindName("Codecs");
             PumpUntil(WaitForAsync(() => qualities.Items.Count == 2 && codecs.Items.Count == 2));
             pages.SelectedIndex = 1;
             PumpUntil(WaitForAsync(() => apiFixture.StreamRequests >= 2 && codecs.Items.Count == 2));
-            ((System.Windows.Controls.TextBox)mainWindow.FindName("UserAgentBox")).Text = "BiliDesktop-UI-Fixture/2.0";
-            typeof(MainWindow).GetMethod("ApplyUserAgent_Click", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(mainWindow, [mainWindow, new RoutedEventArgs()]);
+            ((System.Windows.Controls.TextBox)settingsWindow.FindName("UserAgentBox")).Text = "BiliDesktop-UI-Fixture/2.0";
+            settingsWindow.ApplySettings();
             PumpUntil(WaitForAsync(() => apiFixture.ViewRequests >= 2 && apiFixture.StreamRequests >= 3 && pages.SelectedIndex == 1 && codecs.Items.Count == 2));
             if (apiFixture.LastViewUserAgent != "BiliDesktop-UI-Fixture/2.0" || AppSettings.LoadUserAgent() != "BiliDesktop-UI-Fixture/2.0" || AppSettings.LoadDownloadDirectory() != liveRoot) throw new Exception("UA reparse, selected part or download directory persistence failed");
+            settingsWindow.Close(); Pump();
+            var reopenedSettings = mainWindow.ShowSettings() ?? throw new Exception("Settings not reopened");
+            if (ReferenceEquals(settingsWindow, reopenedSettings) || ((System.Windows.Controls.TextBox)reopenedSettings.FindName("UserAgentBox")).Text != "BiliDesktop-UI-Fixture/2.0" || ((System.Windows.Controls.TextBox)reopenedSettings.FindName("DownloadDirectoryBox")).Text != liveRoot) throw new Exception("Settings did not reopen with the saved values");
+            ((System.Windows.Controls.CheckBox)reopenedSettings.FindName("UseDefaultVideoDirectory")).IsChecked = false;
+            if (!reopenedSettings.ApplySettings() || AppSettings.LoadUseDefaultVideoDirectory()) throw new Exception("Disabling the default folder did not apply");
+            ((System.Windows.Controls.CheckBox)reopenedSettings.FindName("UseDefaultVideoDirectory")).IsChecked = true;
+            reopenedSettings.Close(); Pump();
+            if (AppSettings.LoadUseDefaultVideoDirectory() || !mainWindow.IsEnabled) throw new Exception("Cancel changed settings or failed to restore main window");
+            var confirmSettings = mainWindow.ShowSettings() ?? throw new Exception("Settings not reopened");
+            ((System.Windows.Controls.CheckBox)confirmSettings.FindName("UseDefaultVideoDirectory")).IsChecked = true;
+            ((System.Windows.Controls.Button)confirmSettings.FindName("ConfirmButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent)); Pump();
+            if (!AppSettings.LoadUseDefaultVideoDirectory() || confirmSettings.IsVisible || !mainWindow.IsEnabled) throw new Exception("OK did not apply and close settings");
+            var pathQueue = new DownloadQueue(System.IO.Path.Combine(liveRoot, "name-history.json"));
+            var firstPath = System.IO.Path.Combine(liveRoot, "name.mp4"); System.IO.File.WriteAllText(firstPath, "existing");
+            var reserved = pathQueue.Enqueue("reserved", System.IO.Path.Combine(liveRoot, "name (2).mp4"), async (control, _) => { await Task.Delay(Timeout.Infinite, control.Token); return null; });
+            if (MainWindow.AvailableDownloadPath(liveRoot, "name", ".mp4", pathQueue) != System.IO.Path.Combine(liveRoot, "name (3).mp4")) throw new Exception("Automatic path collided with a file or active task");
+            var dialogCalls = 0;
+            var automaticPath = MainWindow.ChooseDownloadPath(true, liveRoot, "name", ".mp4", "MP4|*.mp4", false, pathQueue, _ => { dialogCalls++; return false; });
+            if (dialogCalls != 0 || automaticPath != System.IO.Path.Combine(liveRoot, "name (3).mp4")) throw new Exception("Automatic download prompted for a path");
+            var selectedPath = System.IO.Path.Combine(liveRoot, "chosen.mp4");
+            var promptedPath = MainWindow.ChooseDownloadPath(false, liveRoot, "name", ".mp4", "MP4|*.mp4", false, pathQueue, dialog => { dialogCalls++; dialog.FileName = selectedPath; return true; });
+            if (dialogCalls != 1 || promptedPath != selectedPath) throw new Exception("Manual download did not ask for a path");
+            if (MainWindow.ChooseDownloadPath(false, liveRoot, "name", ".mp4", "MP4|*.mp4", false, pathQueue, _ => false) is not null) throw new Exception("Canceling the save dialog started a download");
+            reserved.Cancel(); PumpUntil(reserved.Completion);
             AppSettings.SaveTransferOptions(new TransferOptions(4, 32));
             if (AppSettings.LoadDownloadDirectory() != liveRoot || AppSettings.LoadUserAgent() != "BiliDesktop-UI-Fixture/2.0") throw new Exception("Saving transfer settings discarded the UA or download directory");
             mainWindow.Show(); Pump();
@@ -77,12 +136,16 @@ internal static class Program
             TestModelessQr();
             PumpUntil(TestKeywordQueueAsync(liveRoot));
             PumpUntil(TestFavoriteBackupQueueAsync(liveRoot));
+            PumpUntil(TestBatchMetadataCancellationAsync(liveRoot));
+            PumpUntil(TestQueueStageAsync(liveRoot));
+            PumpUntil(TestLiveActionGuardAsync(liveRoot));
             PumpUntil(TestBackupRuleRemovalAsync(liveRoot));
             TestSearchPreview(args.Contains("--render-search"));
             TestFavoritesAndBackup(liveRoot);
             var keywordStore = new BackupStore(System.IO.Path.Combine(liveRoot, "keyword-window.db"));
             mainWindow.ShowKeywordWindow(keywordStore, () => { }, true); Pump();
             var keywordWindow = Application.Current.Windows.OfType<KeywordWindow>().Single();
+            ((System.Windows.Controls.TextBox)keywordWindow.FindName("DirectoryBox")).Text = liveRoot;
             var termInput = (System.Windows.Controls.TextBox)keywordWindow.FindName("Keyword");
             var addTerm = (System.Windows.Controls.Button)keywordWindow.FindName("AddTermButton");
             termInput.Text = "cat"; addTerm.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
@@ -110,14 +173,17 @@ internal static class Program
             if (Application.Current.Windows.OfType<KeywordWindow>().Count() != 1) throw new Exception("Keyword window could not be reopened");
             peerTasks.Close(); Pump();
             Console.WriteLine("Keyword window is modeless and can coexist with the enabled task window.");
+            var settingsOnClose = mainWindow.ShowSettings();
             mainWindow.Close(); Pump();
+            if (Application.Current.Windows.OfType<SettingsWindow>().Contains(settingsOnClose)) throw new Exception("Closing the main window left the settings window open");
             if (Application.Current.Windows.OfType<KeywordWindow>().Any()) throw new Exception("Closing the main window left the keyword window open");
             var delayedFixture = new MainWindowApiFixture { BlockFirstView = true };
             var delayedWindow = new MainWindow(new BiliApi(delayedFixture), false) { ShowInTaskbar = false, ShowActivated = false };
             var earlierParse = delayedWindow.ParseVideoAsync("BV1xx411c7mD");
             PumpUntil(WaitForAsync(() => delayedFixture.ViewRequests == 1));
-            ((System.Windows.Controls.TextBox)delayedWindow.FindName("UserAgentBox")).Text = "BiliDesktop-UI-Fixture/3.0";
-            typeof(MainWindow).GetMethod("ApplyUserAgent_Click", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(delayedWindow, [delayedWindow, new RoutedEventArgs()]);
+            var delayedSettings = delayedWindow.ShowSettings();
+            ((System.Windows.Controls.TextBox)delayedSettings.FindName("UserAgentBox")).Text = "BiliDesktop-UI-Fixture/3.0";
+            delayedSettings!.ApplySettings();
             PumpUntil(WaitForAsync(() => delayedFixture.ViewRequests >= 2 && delayedFixture.StreamRequests >= 1));
             delayedFixture.FirstViewRelease.TrySetResult(); PumpUntil(earlierParse);
             if (delayedFixture.LastViewUserAgent != "BiliDesktop-UI-Fixture/3.0" || ((System.Windows.Controls.ComboBox)delayedWindow.FindName("Pages")).Items.Count != 2) throw new Exception("UA change during parsing did not restart with the new UA");
@@ -154,6 +220,7 @@ internal static class Program
             pauseButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             if (blocked.State != DownloadState.Paused) throw new Exception("Download queue pause failed");
             ((System.Windows.Controls.Button)queueWindow.FindName("ResumeButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (blocked.State != DownloadState.Waiting) throw new Exception("Resuming a queued task incorrectly displayed it as downloading");
             ((System.Windows.Controls.Button)queueWindow.FindName("CancelButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)); PumpUntil(blocked.Completion);
             if (blocked.State != DownloadState.Canceled) throw new Exception("Download queue cancellation failed");
             queue.Remove(blocked);
@@ -183,6 +250,13 @@ internal static class Program
             foreach (var path in existingParts) System.IO.File.WriteAllText(path, "existing");
             var batchWindow = new BatchWindow(fixtureApi, null, [new CollectionVideo(batchVideo.Bvid, batchVideo.Title)], null, null, queue) { ShowInTaskbar = false, ShowActivated = false };
             batchWindow.Show(); Pump();
+            var batchJobs = (System.Windows.Controls.DataGrid)batchWindow.FindName("Jobs");
+            batchJobs.UpdateLayout(); batchJobs.CurrentCell = new System.Windows.Controls.DataGridCellInfo(batchJobs.Items[0], batchJobs.Columns[0]);
+            if (!batchJobs.BeginEdit()) throw new Exception("Could not begin editing a batch checkbox");
+            ((System.Windows.Controls.Button)batchWindow.FindName("SelectNone")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+            if (batchJobs.Items.Cast<BatchJob>().Any(job => job.Selected)) throw new Exception("Select none failed while a checkbox was being edited");
+            ((System.Windows.Controls.Button)batchWindow.FindName("SelectAll")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+            if (batchJobs.Items.Cast<BatchJob>().Any(job => !job.Selected)) throw new Exception("Select all failed after checkbox editing");
             var batchMode = (System.Windows.Controls.ComboBox)batchWindow.FindName("Mode");
             var batchAudio = (AudioOptionsControl)batchWindow.FindName("AudioOptions");
             batchMode.SelectedIndex = 2;
@@ -335,6 +409,38 @@ internal static class Program
         }
         finally { background.Dispose(); backgroundPeer.Close(); if (!closed) window.Close(); app.Shutdown(); }
     }
+    private static System.Diagnostics.Process StartInstanceProbe(string mode, string identity)
+    {
+        var executable = Environment.ProcessPath ?? throw new Exception("Missing process path");
+        var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        if (System.IO.Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) start.ArgumentList.Add(System.Reflection.Assembly.GetEntryAssembly()!.Location);
+        start.ArgumentList.Add(mode); start.ArgumentList.Add(identity);
+        return System.Diagnostics.Process.Start(start) ?? throw new Exception("Could not launch instance test");
+    }
+    private static void TestSingleInstanceProcesses()
+    {
+        var identity = "BiliDesktop-test-" + Guid.NewGuid().ToString("N");
+        var activations = 0;
+        using (var primary = new SingleInstance(identity))
+        {
+            if (!primary.IsPrimary) throw new Exception("First instance could not acquire lock");
+            primary.StartListening(() => Interlocked.Increment(ref activations));
+            using var secondary = StartInstanceProbe("--instance-probe", identity);
+            if (!secondary.WaitForExit(10000)) { secondary.Kill(); throw new Exception("Second instance did not exit"); }
+            if (secondary.ExitCode != 0 || activations != 1) throw new Exception("Second instance did not notify the primary");
+        }
+        using (var afterExit = new SingleInstance(identity)) if (!afterExit.IsPrimary) throw new Exception("Lock not released on normal exit");
+        using (var holder = StartInstanceProbe("--instance-hold", identity))
+        {
+            var ready = holder.StandardOutput.ReadLineAsync();
+            if (!ready.Wait(TimeSpan.FromSeconds(10)) || ready.Result != "READY") { holder.Kill(); throw new Exception("Lock holder did not start"); }
+            using (var blocked = new SingleInstance(identity))
+                if (blocked.IsPrimary || blocked.NotifyPrimary(TimeSpan.FromMilliseconds(150))) throw new Exception("A nonresponsive primary did not block a second instance");
+            holder.Kill(); holder.WaitForExit();
+        }
+        using (var afterCrash = new SingleInstance(identity)) if (!afterCrash.IsPrimary) throw new Exception("Lock not recovered after process termination");
+        Console.WriteLine("Cross-process single-instance notification, normal exit and crash recovery passed.");
+    }
 
     private static void Pump()
     {
@@ -391,12 +497,18 @@ internal static class Program
         if (location.X < main.ActualWidth / 2 || location.Y < main.ActualHeight / 2) throw new Exception("About entry is not at the bottom right");
         button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent)); Pump();
         var fromMain = Application.Current.Windows.OfType<AboutWindow>().Single();
-        if (!fromMain.Topmost || fromMain.ResizeMode != ResizeMode.NoResize || !main.IsEnabled) throw new Exception("About window did not stay on top with only a close button");
+        if (!fromMain.Topmost || fromMain.ResizeMode != ResizeMode.NoResize || main.IsEnabled) throw new Exception("About window did not stay on top and block its peers");
+        main.ActivateFromAnotherInstance(); Pump();
+        if (main.IsEnabled || !fromMain.IsVisible) throw new Exception("Activation bypassed the modal About window");
+        var laterWindow = new Window { ShowInTaskbar = false, ShowActivated = false }; laterWindow.Show(); Pump();
+        PumpUntil(WaitForAsync(() => !laterWindow.IsEnabled));
         var aboutHandle = new System.Windows.Interop.WindowInteropHelper(fromMain).Handle;
         if ((GetWindowLong(aboutHandle, -16) & 0x00030000) != 0 || (GetWindowLong(aboutHandle, -20) & 0x00000008) == 0) throw new Exception("Native About window has minimize/maximize buttons or is not topmost");
         button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent)); Pump();
         if (Application.Current.Windows.OfType<AboutWindow>().Count() != 1) throw new Exception("Repeated About click opened duplicate windows");
         fromMain.Close(); Pump();
+        if (!main.IsEnabled || !laterWindow.IsEnabled) throw new Exception("Closing About did not restore other windows");
+        laterWindow.Close(); Pump();
         var opened = new List<Uri>(); var about = new AboutWindow(uri => opened.Add(uri)) { ShowInTaskbar = false, ShowActivated = false };
         about.Show(); Pump();
         var links = new Dictionary<string, string>
@@ -493,39 +605,44 @@ internal static class Program
         var old = System.IO.Path.Combine(root, "previous", "BiliDesktop.exe");
         var startup = new UiStartupStore { Value = StartupRegistration.CommandFor(old) };
         var window = new MainWindow(new BiliApi(new MainWindowApiFixture()), false, startup, current) { ShowInTaskbar = false, ShowActivated = false };
-        var atLogin = (System.Windows.Controls.CheckBox)window.FindName("StartAtLogin");
+        var settings = window.ShowSettings() ?? throw new Exception("Settings not shown");
+        var atLogin = (System.Windows.Controls.CheckBox)settings.FindName("StartAtLogin");
         if (!atLogin.IsEnabled || atLogin.IsChecked == true || !Equals(startup.Value, StartupRegistration.CommandFor(old))) throw new Exception("Older startup entry was not safely made selectable");
-        atLogin.IsChecked = true; atLogin.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        atLogin.IsChecked = true;
+        if (StartupRegistration.GetState(startup, current) == StartupState.Enabled) throw new Exception("Startup changed before apply");
+        if (!settings.ApplySettings()) throw new Exception("Startup apply failed");
         if (StartupRegistration.GetState(startup, current) != StartupState.Enabled) throw new Exception("Startup checkbox could not switch to current version");
-        atLogin.IsChecked = false; atLogin.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        atLogin.IsChecked = false; if (!settings.ApplySettings()) throw new Exception("Startup apply failed");
         if (startup.Value is not null) throw new Exception("Startup checkbox could not disable current version");
-        var background = (System.Windows.Controls.CheckBox)window.FindName("AllowBackground");
+        var background = (System.Windows.Controls.CheckBox)settings.FindName("AllowBackground");
         if (background.IsChecked == true || AppSettings.LoadAllowBackground()) throw new Exception("Background should default to off");
-        background.IsChecked = true; background.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        background.IsChecked = true; if (AppSettings.LoadAllowBackground()) throw new Exception("Background changed before apply");
+        if (!settings.ApplySettings()) throw new Exception("Background apply failed");
+        settings.Close(); Pump();
         AppSettings.SaveTransferOptions(new TransferOptions(4, 32));
         AppSettings.SaveUserAgent("legacy-agent"); AppSettings.SaveLanguage("en"); AppSettings.SaveDownloadDirectory(root);
         if (!AppSettings.LoadAllowBackground() || AppSettings.LoadUserAgent() != "legacy-agent" || AppSettings.LoadDownloadDirectory() != root) throw new Exception("Background setting was not persisted alongside existing settings");
         var closed = false; window.Closed += (_, _) => closed = true;
         var peer = new Window { ShowInTaskbar = false, ShowActivated = false };
         window.Show(); peer.Show(); Pump();
-        ((System.Windows.Controls.Button)window.FindName("AboutButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent)); Pump();
-        var aboutBeforeTray = Application.Current.Windows.OfType<AboutWindow>().Single();
         window.Close(); Pump();
         var controller = (BackgroundWindowController?)typeof(MainWindow).GetField("background", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(window);
-        if (closed || window.IsVisible || peer.IsVisible || aboutBeforeTray.IsVisible || controller?.IsActive != true) throw new Exception("Closing with background enabled did not hide windows to the tray");
+        if (closed || window.IsVisible || peer.IsVisible || settings.IsVisible || controller?.IsActive != true) throw new Exception("Closing with background enabled did not hide windows to the tray");
         var trayMenu = (System.Windows.Forms.ContextMenuStrip?)typeof(BackgroundWindowController).GetField("menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(controller) ?? throw new Exception("Tray menu missing");
         var aboutMenu = trayMenu.Items.OfType<System.Windows.Forms.ToolStripMenuItem>().SingleOrDefault(item => item.Text == Localizer.Translate("关于")) ?? throw new Exception("Tray About menu item missing");
         aboutMenu.PerformClick(); Pump();
         var trayAbout = Application.Current.Windows.OfType<AboutWindow>().Single();
-        if (!ReferenceEquals(aboutBeforeTray, trayAbout) || !trayAbout.IsVisible || !trayAbout.Topmost || trayAbout.ResizeMode != ResizeMode.NoResize || window.IsVisible) throw new Exception("Tray About did not restore the existing topmost window independently");
+        if (!trayAbout.IsVisible || !trayAbout.Topmost || trayAbout.ResizeMode != ResizeMode.NoResize || window.IsVisible) throw new Exception("Tray About did not restore the existing topmost window independently");
         aboutMenu.PerformClick(); Pump();
         if (Application.Current.Windows.OfType<AboutWindow>().Count() != 1) throw new Exception("Tray About opened duplicate windows");
-        controller.RequestOpen(); Pump();
-        if (!window.IsVisible || !peer.IsVisible || !trayAbout.IsVisible || controller.IsActive) throw new Exception("Restoring the app while About is visible failed");
+        if (window.IsEnabled || peer.IsEnabled) throw new Exception("Tray About did not block other windows");
+        trayAbout.Close(); Pump();
+        window.ActivateFromAnotherInstance(); Pump();
+        if (!window.IsVisible || !peer.IsVisible || !window.IsEnabled || controller.IsActive) throw new Exception("Restoring the app after About closed failed");
         window.Close(); Pump();
         trayMenu = (System.Windows.Forms.ContextMenuStrip?)typeof(BackgroundWindowController).GetField("menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(controller) ?? throw new Exception("Tray menu missing after re-entry");
         aboutMenu = trayMenu.Items.OfType<System.Windows.Forms.ToolStripMenuItem>().Single(item => item.Text == Localizer.Translate("关于"));
-        trayAbout.Close(); Pump(); aboutMenu.PerformClick(); Pump();
+        aboutMenu.PerformClick(); Pump();
         var reopenedAbout = Application.Current.Windows.OfType<AboutWindow>().Single();
         if (ReferenceEquals(trayAbout, reopenedAbout) || !reopenedAbout.IsVisible || !reopenedAbout.Topmost) throw new Exception("Tray About did not reopen after closing");
         reopenedAbout.Close(); Pump();
@@ -624,6 +741,67 @@ internal static class Program
         }
         finally { release.TrySetResult(); if (run is not null) await run; await blocker; window.Close(); MediaDownload.Configure(new(4, 32)); }
     }
+    private static async Task TestBatchMetadataCancellationAsync(string root)
+    {
+        var summaryJobs = new[] { new BatchJob { Number = 1, Bvid = "BV0000000001", Label = "ok", Finished = true, Status = "完成" }, new BatchJob { Number = 2, Bvid = "BV0000000002", Label = "failed", Finished = true, HasError = true, Status = "完成 0，失败 1，跳过 0" }, new BatchJob { Number = 3, Bvid = "BV0000000003", Label = "stopped", Finished = true, Status = "已停止排队" } };
+        if (BatchWindow.BatchSummary(summaryJobs) != string.Format(Localizer.Translate("完成 {0}，失败 {1}，已停止 {2}"), 1, 1, 1)) throw new Exception("Batch summary misreported failed or stopped jobs");
+        var fixture = new BlockingBatchMetadataFixture();
+        var queue = new DownloadQueue(System.IO.Path.Combine(root, "bounded-batch-history.json"));
+        var videos = Enumerable.Range(0, 44).Select(i => new CollectionVideo("BV" + i.ToString("D10"), "fixture " + i)).ToArray();
+        var batch = new BatchWindow(new BiliApi(fixture), null, videos, null, null, queue) { ShowInTaskbar = false, ShowActivated = false };
+        batch.Show();
+        ((System.Windows.Controls.Button)batch.FindName("Start")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        await WaitForAsync(() => fixture.Active == 4);
+        await Task.Delay(150);
+        if (fixture.Maximum != 4 || fixture.Requests != 4 || !batch.IsRunning || queue.Items.Count != 0) throw new Exception("Batch metadata requests were not bounded before downloading");
+        ((System.Windows.Controls.Button)batch.FindName("Stop")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        await WaitForAsync(() => !batch.IsRunning);
+        if (fixture.Canceled != 4 || queue.Items.Count != 0) throw new Exception("Stopping the batch did not cancel pending metadata requests");
+        batch.Close();
+        foreach (var taskWindow in Application.Current.Windows.OfType<DownloadQueueWindow>().ToArray()) taskWindow.Close();
+        Console.WriteLine("Batch metadata concurrency is bounded and blocked reads cancel promptly.");
+    }
+    private static async Task TestQueueStageAsync(string root)
+    {
+        var queue = new DownloadQueue(System.IO.Path.Combine(root, "queue-stage-history.json"));
+        var entry = queue.Enqueue("fixture", root, async (control, progress) => { progress.Report("等待准备 FFmpeg…"); await Task.Delay(Timeout.Infinite, control.Token); return null; });
+        await WaitForAsync(() => entry.State == DownloadState.Running && entry.StateText == Localizer.Translate("等待准备 FFmpeg…"));
+        entry.Pause(); entry.Resume();
+        if (entry.State != DownloadState.Running) throw new Exception("Resuming an active task lost its running state");
+        entry.Cancel(); await entry.Completion;
+        if (entry.State != DownloadState.Canceled) throw new Exception("Canceling a dependency preparation task failed");
+        Console.WriteLine("Download queue shows the current preparation stage and cancels it.");
+    }
+    private static async Task TestLiveActionGuardAsync(string root)
+    {
+        var stateDir = System.IO.Path.Combine(root, "live-action-guard");
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshes = 0;
+        BililiveRecorder.Core.IRoom? refreshedRoom = null;
+        using var manager = new LiveManager("", stateDir, refreshRoom: async room =>
+        {
+            refreshedRoom = room; Interlocked.Increment(ref refreshes); entered.TrySetResult(); await release.Task;
+            room.GetType().GetField("name", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(room, "fixture");
+            room.GetType().GetField("streaming", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(room, true);
+        });
+        var id = manager.AddRoom("2147483645"); manager.ToggleAuto(id);
+        var window = new LiveWindow(manager) { ShowInTaskbar = false, ShowActivated = false }; window.Show();
+        var rooms = (System.Windows.Controls.DataGrid)window.FindName("Rooms"); rooms.SelectedItem = rooms.Items[0];
+        var start = typeof(LiveWindow).GetMethod("Start_Click", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        start.Invoke(window, [window, new RoutedEventArgs()]);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        if (((System.Windows.Controls.Button)window.FindName("StartRoomButton")).IsEnabled || ((System.Windows.Controls.Button)window.FindName("AddRoomButton")).IsEnabled || !((System.Windows.Controls.Button)window.FindName("StopRoomButton")).IsEnabled) throw new Exception("Live controls did not preserve stop while preventing overlapping requests");
+        start.Invoke(window, [window, new RoutedEventArgs()]);
+        if (refreshes != 1) throw new Exception("Live window started overlapping room operations");
+        ((System.Windows.Controls.Button)window.FindName("StopRoomButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        release.TrySetResult();
+        await WaitForAsync(() => ((System.Windows.Controls.Button)window.FindName("StartRoomButton")).IsEnabled);
+        if (refreshedRoom is null || refreshedRoom.AutoRecordForThisSession) throw new Exception("A pending start restarted recording after stop");
+        if (((System.Windows.Controls.TextBlock)window.FindName("Status")).Text != "已请求停止录制") throw new Exception("A pending start replaced the user's stop result");
+        window.Close();
+        Console.WriteLine("Live room controls prevent overlapping operations and recover after an error.");
+    }
     private static async Task TestBackupRuleRemovalAsync(string root)
     {
         var baseDir = System.IO.Path.Combine(root, "remove-backup"); System.IO.Directory.CreateDirectory(baseDir);
@@ -696,6 +874,7 @@ internal static class Program
         var triggerCount = 0; var api = new BiliApi(new FavoritesUiFixture());
         var window = new BackupWindow(api, store, () => triggerCount++) { ShowInTaskbar = false, ShowActivated = false };
         window.Show(); Pump();
+        ((System.Windows.Controls.TextBox)window.FindName("DirectoryBox")).Text = root;
         var group = (System.Windows.Controls.GroupBox)window.FindName("BackupGroup");
         var selectedButton = (System.Windows.Controls.Button)window.FindName("AddSelected");
         var allButton = (System.Windows.Controls.Button)window.FindName("AddAll");
@@ -764,7 +943,7 @@ internal static class Program
         ((System.Windows.Controls.Button)window.FindName("PauseButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         if (first.State != DownloadState.Paused || second.State != DownloadState.Paused) throw new Exception("Batch pause failed");
         ((System.Windows.Controls.Button)window.FindName("ResumeButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-        if (first.State != DownloadState.Running || second.State != DownloadState.Running) throw new Exception("Batch resume failed");
+        if (first.State != DownloadState.Waiting || second.State != DownloadState.Waiting) throw new Exception("Resumed queued tasks did not return to the waiting state");
         ((System.Windows.Controls.Button)window.FindName("CancelButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         PumpUntil(Task.WhenAll(first.Completion, second.Completion));
         if (first.State != DownloadState.Canceled || second.State != DownloadState.Canceled) throw new Exception("Batch cancel failed");
@@ -879,6 +1058,25 @@ sealed class DeferredBackupValidationGateway : IBackupGateway
     public async Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) { CheckStarted.TrySetResult(); return await CheckRelease.Task.WaitAsync(cancellation); }
 }
 
+sealed class BlockingBatchMetadataFixture : HttpMessageHandler
+{
+    private int active, maximum, requests, canceled;
+    public int Active => Volatile.Read(ref active);
+    public int Maximum => Volatile.Read(ref maximum);
+    public int Requests => Volatile.Read(ref requests);
+    public int Canceled => Volatile.Read(ref canceled);
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.RequestUri!.AbsolutePath == "/x/frontend/finger/spi") return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("""{"code":0,"data":{"b_3":"fixture-device"}}""") };
+        if (request.RequestUri.AbsolutePath != "/x/web-interface/view") throw new InvalidOperationException("Unexpected fixture request");
+        Interlocked.Increment(ref requests); var count = Interlocked.Increment(ref active);
+        int previous; do { previous = maximum; if (count <= previous) break; } while (Interlocked.CompareExchange(ref maximum, count, previous) != previous);
+        try { await Task.Delay(Timeout.Infinite, cancellationToken); throw new Exception("Unexpected request completion"); }
+        catch (OperationCanceledException) { Interlocked.Increment(ref canceled); throw; }
+        finally { Interlocked.Decrement(ref active); }
+    }
+}
+
 sealed class UpdateUiFixture : HttpMessageHandler
 {
     public int Calls { get; private set; }
@@ -887,7 +1085,7 @@ sealed class UpdateUiFixture : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Calls++;
-        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta3","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
+        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta4","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
     }
 }
 

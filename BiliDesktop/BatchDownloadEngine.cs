@@ -36,8 +36,8 @@ public sealed class BatchDownloadEngine(BiliApi api, VideoStream? preferredVideo
                     await MediaDownload.InSlotAsync(async () =>
                     {
                         if (namingVideo is null && BatchPolicy.OutputAlreadyExists(format, mp4Path, mkvPath)) { appearedWhileQueued = true; return; }
-                        job.Status = $"正在获取分 P {part}/{pages.Count} 的流…";
-                        var streams = await api.GetStreamsForPageAsync(job.Bvid, page);
+                        job.Status = $"正在获取分 P {part}/{pages.Count} 的流…"; queueProgress?.Report(job.Status);
+                        var streams = await api.GetStreamsForPageAsync(job.Bvid, page, control?.Token ?? CancellationToken.None);
                         if (api.SessionVersion != sessionVersion) throw new InvalidOperationException("登录会话已变化，请重新解析视频。");
                         if (streams.IsPreview) throw new InvalidOperationException("当前账号只能获取预览，未作为完整视频下载。");
                         var selectedVideo = mode == 2 ? null : BatchPolicy.ChooseVideo(streams.Video, preferredVideo);

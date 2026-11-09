@@ -41,7 +41,7 @@ public partial class BackupWindow : Window
         AddAll.SetResourceReference(ToolTipProperty, Localizer.Key("备份当前列表中的所有收藏夹。"));
         BackupUnavailable.SetResourceReference(TextBlock.TextProperty, Localizer.Key("自动备份不可用。"));
         BackupUnavailable.Visibility = store is null ? Visibility.Visible : Visibility.Collapsed;
-        try { DirectoryBox.Text = AppSettings.LoadDownloadDirectory(); } catch (Exception) { DirectoryBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos); }
+        DirectoryBox.Text = AppSettings.IndependentDownloadDirectory();
         refresh.Tick += (_, _) => RefreshRules(); if (store is not null) { refresh.Start(); RefreshRules(); }
         SetBusy(false);
         Loaded += async (_, _) => await LoadFoldersAsync();

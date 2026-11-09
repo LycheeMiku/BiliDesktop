@@ -17,6 +17,8 @@ public partial class LiveWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(1) };
     private readonly ObservableCollection<LiveRoomRow> roomRows = [];
     private string? shownRecorderError;
+    private bool roomBusy;
+    private int roomActionVersion;
     public LiveWindow(LiveManager manager) : this(manager, null) { }
     internal LiveWindow(LiveManager manager, Action<string>? openDirectory)
     {
@@ -60,30 +62,46 @@ public partial class LiveWindow : Window
     }
     private async void Add_Click(object sender, RoutedEventArgs e)
     {
+        if (roomBusy) return;
+        SetRoomBusy(true);
         try { Status.Text = "正在获取直播间信息…"; var id = await manager.AddRoomAsync(Input.Text); Input.Clear(); RefreshRooms(); Rooms.SelectedItem = roomRows.FirstOrDefault(r => r.Id == id); Status.Text = "直播间已添加"; }
         catch (Exception ex) { RefreshRooms(); Status.Text = ex.Message; }
+        finally { SetRoomBusy(false); }
     }
-    private Guid[] SelectedIds() => roomRows.Where(row => row.IsChecked).Select(row => row.Id).ToArray() is { Length: > 0 } checkedIds ? checkedIds : Rooms.SelectedItem is LiveRoomRow row ? [row.Id] : [];
-    private void WithSelected(Action<Guid> action, string success)
+    private void Input_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        if (e.Key != System.Windows.Input.Key.Enter) return;
+        e.Handled = true;
+        if (!roomBusy) Add_Click(sender, e);
+    }
+    private void SetRoomBusy(bool value) { roomBusy = value; Input.IsEnabled = !value; AddRoomButton.IsEnabled = !value; RefreshRoomButton.IsEnabled = !value; StartRoomButton.IsEnabled = !value; AutoButton.IsEnabled = !value; RemoveRoomButton.IsEnabled = !value; }
+    private Guid[] SelectedIds() => roomRows.Where(row => row.IsChecked).Select(row => row.Id).ToArray() is { Length: > 0 } checkedIds ? checkedIds : Rooms.SelectedItem is LiveRoomRow row ? [row.Id] : [];
+    private void WithSelected(Action<Guid> action, string success, bool allowBusy = false)
+    {
+        if (roomBusy && !allowBusy) return;
         var ids = SelectedIds(); if (ids.Length == 0) { Status.Text = "请选择直播间。"; return; }
         var errors = new List<string>(); foreach (var id in ids) { try { action(id); } catch (Exception ex) { errors.Add(ex.Message); } }
         RefreshRooms(); Status.Text = errors.Count == 0 ? success : string.Join("；", errors.Distinct());
     }
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
+        if (roomBusy) return;
         var ids = SelectedIds(); if (ids.Length == 0) { Status.Text = "请选择直播间。"; return; }
-        Status.Text = "正在获取直播间信息…"; var errors = new List<string>();
-        foreach (var id in ids) { try { await manager.StartAsync(id); } catch (Exception ex) { errors.Add(ex.Message); } }
-        RefreshRooms(); Status.Text = errors.Count == 0 ? "已请求开始录制" : string.Join("；", errors.Distinct());
+        var version = ++roomActionVersion;
+        SetRoomBusy(true);
+        try { Status.Text = "正在获取直播间信息…"; var errors = new List<string>(); foreach (var id in ids) { if (version != roomActionVersion) break; try { await manager.StartAsync(id, () => version == roomActionVersion); } catch (Exception ex) { errors.Add(ex.Message); } } RefreshRooms(); if (version == roomActionVersion) Status.Text = errors.Count == 0 ? "已请求开始录制" : string.Join("；", errors.Distinct()); }
+        finally { SetRoomBusy(false); }
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
+        if (roomBusy) return;
         var ids = SelectedIds(); if (ids.Length == 0) { Status.Text = "请选择直播间。"; return; }
-        var errors = new List<string>(); foreach (var id in ids) { try { await manager.RefreshAsync(id); } catch (Exception ex) { errors.Add(ex.Message); } }
-        RefreshRooms(); Status.Text = errors.Count == 0 ? "已请求刷新直播间状态" : "刷新失败：" + string.Join("；", errors.Distinct());
+        var version = roomActionVersion;
+        SetRoomBusy(true);
+        try { Status.Text = "正在获取直播间信息…"; var errors = new List<string>(); foreach (var id in ids) { try { await manager.RefreshAsync(id); } catch (Exception ex) { errors.Add(ex.Message); } } RefreshRooms(); if (version == roomActionVersion) Status.Text = errors.Count == 0 ? "已请求刷新直播间状态" : "刷新失败：" + string.Join("；", errors.Distinct()); }
+        finally { SetRoomBusy(false); }
     }
-    private void Stop_Click(object sender, RoutedEventArgs e) => WithSelected(manager.Stop, "已请求停止录制");
+    private void Stop_Click(object sender, RoutedEventArgs e) { if (SelectedIds().Length == 0) { Status.Text = "请选择直播间。"; return; } ++roomActionVersion; WithSelected(manager.Stop, "已请求停止录制", allowBusy: true); }
     private void Auto_Click(object sender, RoutedEventArgs e) => WithSelected(manager.ToggleAuto, "自动录制设置已更新");
     private void Remove_Click(object sender, RoutedEventArgs e) => WithSelected(manager.RemoveRoom, "直播间已移除");
     private void Events_Click(object sender, RoutedEventArgs e)

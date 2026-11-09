@@ -2,7 +2,7 @@
 
 BiliDesktop 是一款面向 Windows 的哔哩哔哩视频下载与直播录制桌面工具。它使用原生桌面界面，支持下载队列、收藏夹备份和关键词自动下载。
 
-> 当前版本为 beta2，仍在开发和测试中。平台接口、账号权限和网络状况可能影响功能；请在获得授权并遵守适用规则的前提下使用。
+> 当前版本为 beta3，仍在开发和测试中。平台接口、账号权限和网络状况可能影响功能；请在获得授权并遵守适用规则的前提下使用。
 
 ## 功能
 
@@ -16,7 +16,9 @@ BiliDesktop 是一款面向 Windows 的哔哩哔哩视频下载与直播录制�
 
 ## 使用
 
-从 [Releases](https://github.com/LycheeMiku/BiliDesktop/releases) 下载 Windows x64 版本，完整解压后运行 `BiliDesktop.exe`。自包含版本无需单独安装 .NET。首次需要处理音视频时，如果找不到 FFmpeg，程序会尝试下载并校验所需组件，因此需要网络连接；也可以自行提供 FFmpeg 和 ffprobe。不要仅将 exe 从解压目录中单独移走。
+从 [Releases](https://github.com/LycheeMiku/BiliDesktop/releases) 下载 Windows x64 版本，完整解压后运行 `BiliDesktop.exe`。自包含版本无需单独安装 .NET。发行版包含 FFmpeg 和 ffprobe；从源码直接构建时，缺少这些组件会触发下载，也可以自行提供。不要仅将 exe 从解压目录中单独移走。
+
+在主界面输入视频链接、BV 或 AV 号并解析；搜索、UP 主、收藏夹、关键词和直播录制位于独立入口。展开“账号”可以登录或退出。下载目录、性能、User-Agent、语言以及启动和后台运行选项集中在“设置”中。
 
 自动备份、关键词监控和自动录制需要程序保持运行。保存的登录信息使用 Windows 当前用户的加密机制保护；登录有效期不保证服务端不会提前使会话失效。
 
@@ -30,11 +32,13 @@ dotnet build BiliDesktop/BiliDesktop.csproj -c Release
 dotnet run --project BiliDesktop/BiliDesktop.csproj
 ```
 
-构建 Windows x64 自包含版本：
+构建 Windows x64 自包含版本（此命令不包含 FFmpeg）：
 
 ```powershell
 dotnet publish BiliDesktop/BiliDesktop.csproj -c Release -r win-x64 --self-contained true -o ./publish/win-x64
 ```
+
+要生成包含 FFmpeg 的离线运行版本，请先取得并校验 FFmpeg 9.0.2 Essentials 构建包，再运行 `./scripts/Publish-Windows.ps1 -FfmpegArchive <压缩包路径>`；脚本会核对内置 SHA-256，并携带其许可证。
 
 详细的实现、限制和测试记录见 [开发说明](BiliDesktop/README.md)。仓库中 `BililiveRecorder` 包含本项目使用并修改过的录播核心源码，不能直接替换为上游原版。
 
