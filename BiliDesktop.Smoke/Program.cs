@@ -13,12 +13,12 @@ var fallbackHandler = new UpdateFixtureHandler((request, _) =>
     if (request.RequestUri!.Host == "api.github.com") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway));
     if (request.RequestUri.Host == "gh.dpik.top") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("invalid") });
     if (request.RequestUri.Host == "gh-proxy.com") { var redirect = new HttpResponseMessage(System.Net.HttpStatusCode.Redirect); redirect.Headers.Location = new Uri("https://evil.example/releases"); return Task.FromResult(redirect); }
-    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson) });
+    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson.Replace("beta2", "beta3")) });
 });
 using (var client = new HttpClient(fallbackHandler))
 {
     var checkedRelease = await new UpdateChecker(client, TimeSpan.FromSeconds(1)).CheckAsync("Asia/Shanghai");
-    if (checkedRelease?.Version != "beta2" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
+    if (checkedRelease?.Version != "beta3" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
 }
 var failureHandler = new UpdateFixtureHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)));
 using (var client = new HttpClient(failureHandler))
@@ -556,6 +556,67 @@ try
         }
         foreach (var bulkRule in store.List()) store.Remove(bulkRule.Id);
         Console.WriteLine("Bulk backup rules, duplicate handling and validation passed.");
+        var legacyDir = Path.Combine(temporary, "legacy-backup"); Directory.CreateDirectory(legacyDir);
+        var legacyFile = Path.Combine(legacyDir, "previous.mp4"); File.WriteAllText(legacyFile, "old");
+        var replacementFile = Path.Combine(legacyDir, "replacement.mp4"); File.WriteAllText(replacementFile, "new");
+        store.Add(123, new FavoriteFolder(9991, "legacy", 1), legacyDir, 5);
+        var legacyRule = store.List().Single();
+        store.MarkCompleted(legacyRule.Id, "BV1xx411c7mD", 11, legacyFile);
+        store.MarkCompleted(legacyRule.Id, "BV1xx411c7mD", 11, replacementFile);
+        File.Delete(legacyFile);
+        if (!store.IsCompleted(legacyRule.Id, "BV1xx411c7mD", 11)) throw new Exception("Completion update did not replace the saved path");
+        var legacyGateway = new BackupFixtureGateway();
+        await new BackupEngine(store, legacyGateway).RunDueAsync();
+        if (legacyGateway.Successes != 1 || !File.Exists(replacementFile)) throw new Exception("Existing legacy completion was redownloaded or moved");
+        store.Remove(legacyRule.Id);
+        var manualDir = Path.Combine(temporary, "manual-favorites"); Directory.CreateDirectory(manualDir);
+        store.Add(123, new FavoriteFolder(9994, "manual", 1), manualDir, 5);
+        var manualRule = store.List().Single();
+        var manualGateway = new BackupFixtureGateway();
+        var manualVideo = await manualGateway.VideoAsync("BV1xx411c7mD");
+        var manualOutput = DownloadNaming.Folder(BackupEngine.FolderDirectory(manualRule), manualVideo);
+        Directory.CreateDirectory(manualOutput);
+        var manualName = DownloadNaming.BaseName(manualVideo, manualVideo.Pages[0], 1, new VideoStream(80, "avc", 200, "https://example.com/v", []), null) + ".mp4";
+        var manualFile = Path.Combine(manualOutput, manualName); File.WriteAllText(manualFile, "fixture");
+        store.RecordFavoriteFile(123, 9994, manualVideo.Bvid, manualVideo.Pages[0].Cid, manualFile);
+        var corruptFile = Path.Combine(BackupEngine.FolderDirectory(manualRule), BatchPolicy.FileName(manualVideo.Bvid, 2, manualVideo.Pages[1].Label, false));
+        File.WriteAllText(corruptFile, "corrupt");
+        var manualEngine = new BackupEngine(store, manualGateway);
+        await manualEngine.RunDueAsync();
+        var repaired = store.FavoriteFile(123, 9994, manualVideo.Bvid, manualVideo.Pages[1].Cid);
+        if (manualGateway.Successes != 1 || repaired is null || repaired == corruptFile || !File.Exists(repaired) || File.ReadAllText(corruptFile) != "corrupt" || !store.IsCompleted(manualRule.Id, manualVideo.Bvid, manualVideo.Pages[0].Cid)) throw new Exception("Manual favorite file reconciliation or safe incomplete-file recovery failed");
+        store.RunNow(manualRule.Id); await manualEngine.RunDueAsync();
+        if (manualGateway.Successes != 1) throw new Exception("Reconciled favorites were downloaded again");
+        store.Remove(manualRule.Id);
+        var untrackedDir = Path.Combine(temporary, "untracked-favorites"); Directory.CreateDirectory(untrackedDir);
+        store.Add(123, new FavoriteFolder(9995, "untracked", 1), untrackedDir, 5);
+        var untrackedRule = store.List().Single();
+        var oldManual = DownloadNaming.Folder(untrackedDir, manualVideo); Directory.CreateDirectory(oldManual);
+        File.WriteAllText(Path.Combine(oldManual, manualName), "fixture");
+        var untrackedGateway = new BackupFixtureGateway { IncludeDuration = true }; await new BackupEngine(store, untrackedGateway).RunDueAsync();
+        if (untrackedGateway.Successes != 1 || store.FavoriteFile(123, 9995, manualVideo.Bvid, manualVideo.Pages[0].Cid) is null) throw new Exception("Previous manual favorite download was not recognized");
+        store.Remove(untrackedRule.Id);
+        Console.WriteLine("Manual and prior favorite downloads reconcile with backups; damaged originals are preserved.");
+        var concurrencyDir = Path.Combine(temporary, "backup-concurrency"); Directory.CreateDirectory(concurrencyDir);
+        try
+        {
+            MediaDownload.Configure(new(17, 16, 2));
+            store.Add(123, new FavoriteFolder(9992, "parallel", 1), concurrencyDir, 5);
+            var parallel = new ConcurrentBackupFixtureGateway();
+            await new BackupEngine(store, parallel).RunDueAsync();
+            if (parallel.Maximum != 2 || parallel.Successes != 2) throw new Exception("Backup did not use the configured global concurrency");
+            store.Remove(store.List().Single().Id);
+            MediaDownload.Configure(new(3, 16, 1));
+            store.Add(123, new FavoriteFolder(9993, "serial", 1), concurrencyDir, 5);
+            var serial = new ConcurrentBackupFixtureGateway();
+            await new BackupEngine(store, serial).RunDueAsync();
+            if (serial.Maximum != 1 || serial.Successes != 2) throw new Exception("Backup exceeded the configured global concurrency");
+            store.Remove(store.List().Single().Id);
+            var backupAriaOptions = MediaDownload.AriaSession.MakeOptions(concurrencyDir, "test", BiliApi.DefaultUserAgent, MediaDownload.CurrentOptions.Connections);
+            if ((string)backupAriaOptions["split"] != "3") throw new Exception("Configured connection count was not applied to aria2");
+        }
+        finally { MediaDownload.Configure(new(4, 32)); }
+        Console.WriteLine("Legacy backup paths, updated completion records and configured backup concurrency passed.");
         store.Add(123, new FavoriteFolder(456, "fixture", 1), backupDir, 5);
         var rule = store.List().Single();
         var gateway = new BackupFixtureGateway { FailSecondOnce = true };
@@ -570,11 +631,16 @@ try
         if (gateway.Successes != 2) throw new Exception("Backup records did not survive reopen or title change");
         gateway.FirstLabel = "P1 · one";
         reopened.Add(123, new FavoriteFolder(458, "collision", 1), backupDir, 5);
+        var initialOutput = BackupEngine.FolderDirectory(rule);
+        var collisionOutput = BackupEngine.FolderDirectory(reopened.List().Single(r => r.FolderId == 458));
+        if (initialOutput == collisionOutput || Directory.GetFiles(initialOutput).Length != 2) throw new Exception("Favorite folders do not have separate directories");
+        Directory.CreateDirectory(collisionOutput);
+        foreach (var file in Directory.GetFiles(initialOutput)) File.Copy(file, Path.Combine(collisionOutput, Path.GetFileName(file)));
         await new BackupEngine(reopened, gateway).RunDueAsync();
         var collisionRule = reopened.List().Single(r => r.FolderId == 458);
-        if (gateway.Successes != 2 || !collisionRule.Status.Contains("已有但未登记 2")) throw new Exception("Untracked existing files were not safely reported");
+        if (gateway.Successes != 2 || !collisionRule.Status.Contains("已有完整 2")) throw new Exception("Untracked existing files were not safely reported");
         reopened.Remove(collisionRule.Id);
-        var missing = Path.Combine(backupDir, BatchPolicy.FileName("BV1xx411c7mD", 1, "P1 · one", false));
+        var missing = Path.Combine(initialOutput, BatchPolicy.FileName("BV1xx411c7mD", 1, "P1 · one", false));
         File.Delete(missing); reopened.RunNow(rule.Id); await new BackupEngine(reopened, gateway).RunDueAsync();
         if (gateway.Successes != 3 || !File.Exists(missing)) throw new Exception("Missing backup was not restored");
         gateway.AccountId = 999; reopened.RunNow(rule.Id); await new BackupEngine(reopened, gateway).RunDueAsync();
@@ -653,10 +719,13 @@ try
         restart.Add(123, new FavoriteFolder(459, "FLAC", 1), flacBackupDir, 5);
         await new BackupEngine(restart, flacGateway).RunDueAsync();
         var flacBackupRule = restart.List().Single(r => r.FolderId == 459);
-        if (flacGateway.Successes != 2 || Directory.GetFiles(flacBackupDir, "*.mkv").Length != 2) throw new Exception("FLAC backup did not use MKV");
+        if (flacGateway.Successes != 2 || Directory.GetFiles(flacBackupDir, "*.mkv", SearchOption.AllDirectories).Length != 2) throw new Exception("FLAC backup did not use MKV");
         restart.Add(123, new FavoriteFolder(460, "existing MKV", 1), flacBackupDir, 5);
+        var existingFlacDir = BackupEngine.FolderDirectory(restart.List().Single(r => r.FolderId == 460));
+        Directory.CreateDirectory(existingFlacDir);
+        foreach (var file in Directory.GetFiles(BackupEngine.FolderDirectory(flacBackupRule), "*.mkv")) File.Copy(file, Path.Combine(existingFlacDir, Path.GetFileName(file)));
         await new BackupEngine(restart, new BackupFixtureGateway()).RunDueAsync();
-        if (!restart.List().Single(r => r.FolderId == 460).Status.Contains("已有但未登记 2")) throw new Exception("Existing MKV was not detected");
+        if (!restart.List().Single(r => r.FolderId == 460).Status.Contains("已有完整 2")) throw new Exception("Existing MKV was not detected");
         restart.Remove(flacBackupRule.Id); restart.Remove(restart.List().Single(r => r.FolderId == 460).Id);
 
         var flacKeywordDir = Path.Combine(temporary, "flac-keyword"); Directory.CreateDirectory(flacKeywordDir);
@@ -754,6 +823,10 @@ try
     await MediaDownload.RunAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=size=192x108:rate=10", "-t", "1", "-c:v", "mpeg4", "-an", videoPath]);
     await MediaDownload.RunAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-c:a", "aac", "-vn", audioPath]);
     await MediaDownload.ProcessMediaAsync(videoPath, audioPath, outputPath);
+    var truncatedPath = Path.Combine(temporary, "truncated.mp4");
+    var fullBytes = File.ReadAllBytes(outputPath); File.WriteAllBytes(truncatedPath, fullBytes[..(fullBytes.Length / 2)]);
+    if (!await MediaDownload.ValidateCompleteVideoAsync(outputPath, 1, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(outputPath, 30, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(videoPath, null, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(truncatedPath, null, CancellationToken.None)) throw new Exception("Existing media integrity verification failed");
+    Console.WriteLine("Existing media verification detects missing streams, truncation and insufficient duration.");
     await MediaDownload.ProcessMediaAsync(videoPath, null, Path.Combine(temporary, "video-only.mp4"));
     await MediaDownload.ProcessMediaAsync(null, audioPath, Path.Combine(temporary, "audio-only.m4a"));
     var flacPath = Path.Combine(temporary, "audio.flac");
@@ -789,6 +862,7 @@ try
         var hasCover = probeStreams.Any(x => x.GetProperty("codec_type").GetString() == "video" && x.GetProperty("codec_name").GetString() == "mjpeg" && x.TryGetProperty("disposition", out var disposition) && disposition.GetProperty("attached_pic").GetInt32() == 1 && (extension == ".m4a" || x.TryGetProperty("tags", out var attachmentTags) && attachmentTags.GetProperty("mimetype").GetString() == "image/jpeg"));
         if (!hasCover) throw new Exception("Embedded cover missing from " + extension);
     }
+    if (await MediaDownload.ValidateCompleteVideoAsync(Path.Combine(temporary, "tagged.mkv"), 1, CancellationToken.None)) throw new Exception("Audio with cover art was mistaken for complete video");
     var titleOnly = Path.Combine(temporary, "title-only.m4a");
     await MediaDownload.ProcessMediaAsync(null, audioPath, titleOnly, audioMetadata: new AudioMetadataOptions(Title: true).ForVideo(metadataVideo, metadataVideo.Pages[1]));
     var titleOnlyProbe = await MediaDownload.RunAsync("ffprobe", ["-v", "error", "-show_entries", "format_tags:stream=codec_type", "-of", "json", titleOnly]);
@@ -1204,10 +1278,10 @@ if (args.Contains("--account-check") || args.Contains("--account-full-backup"))
         var engine = new BackupEngine(store, gateway);
         await engine.RunDueAsync();
         var status = store.List().Single().Status;
-        var files = Directory.GetFiles(outputDirectory);
+        var files = Directory.GetFiles(outputDirectory, "*", SearchOption.AllDirectories);
         if (!status.Contains("失败 0", StringComparison.Ordinal) || files.Length == 0 || !fullBackup && files.Length != 1 || files.Any(f => new FileInfo(f).Length == 0)) throw new InvalidOperationException("Authenticated backup failed: " + status);
         store.RunNow(store.List().Single().Id); await engine.RunDueAsync();
-        if (Directory.GetFiles(outputDirectory).Length != files.Length || !store.List().Single().Status.Contains("新增 0，失败 0", StringComparison.Ordinal)) throw new InvalidOperationException("Authenticated backup deduplication failed");
+        if (Directory.GetFiles(outputDirectory, "*", SearchOption.AllDirectories).Length != files.Length || !store.List().Single().Status.Contains("新增 0，失败 0", StringComparison.Ordinal)) throw new InvalidOperationException("Authenticated backup deduplication failed");
         Console.WriteLine($"Authenticated {(fullBackup ? "full-folder" : "single-item")} backup and repeat deduplication passed: {files.Length} files, {files.Sum(f => new FileInfo(f).Length)} bytes.");
         success = true;
     }
@@ -1458,9 +1532,11 @@ sealed class BackupFixtureGateway : IKeywordGateway
     public string FirstLabel { get; set; } = "P1 · one";
     public bool ChangeSessionDuringStreams { get; set; }
     public int SearchCalls { get; private set; }
-    public int Successes { get; private set; }
+    private int successes;
+    public int Successes => Volatile.Read(ref successes);
     public bool FailSecondOnce { get; set; }
     public bool UseFlac { get; set; }
+    public bool IncludeDuration { get; set; }
     public string? SearchError { get; set; }
     public int StreamCalls { get; private set; }
     public Task<AccountInfo> AccountAsync() => Task.FromResult(new AccountInfo(AccountId, "fixture"));
@@ -1474,7 +1550,7 @@ sealed class BackupFixtureGateway : IKeywordGateway
             ? new VideoSearchPage(1, 2, [new("BV1xx411c7mD", "cat video", "owner", "1:00", now), new("BV0000000001", "unrelated", "owner", "1:00", now)])
             : new VideoSearchPage(2, 2, [new("BV0000000002", "cat old", "owner", "1:00", 1000)]));
     }
-    public Task<VideoInfo> VideoAsync(string bvid) => Task.FromResult(new VideoInfo(bvid, "fixture", "owner", "", [new(11, FirstLabel), new(22, "P2 · two")], 123, null));
+    public Task<VideoInfo> VideoAsync(string bvid) => Task.FromResult(new VideoInfo(bvid, "fixture", "owner", "", [new(11, FirstLabel, DurationSeconds: IncludeDuration ? 10 : null), new(22, "P2 · two", DurationSeconds: IncludeDuration ? 10 : null)], 123, null));
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page)
     {
         StreamCalls++;
@@ -1482,11 +1558,35 @@ sealed class BackupFixtureGateway : IKeywordGateway
         return Task.FromResult(new MediaStreams([new(80, "avc", 200, "https://example.com/v", [])], UseFlac ? [new(30251, "flac", 1000, "https://example.com/a", [])] : [new(1, "aac", 100, "https://example.com/a", [])]));
     }
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
+    public Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => Task.FromResult(File.Exists(path) && File.ReadAllText(path) != "corrupt");
     public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         cancellation.ThrowIfCancellationRequested();
         if (!canStart()) throw new InvalidOperationException("Fixture rule changed");
         if (FailSecondOnce && (Path.GetFileName(destination).Contains("_P002_") || Path.GetFileName(destination).Contains("-002-"))) { FailSecondOnce = false; throw new IOException("fixture failure"); }
-        await File.WriteAllTextAsync(destination, "fixture"); Successes++;
+        await File.WriteAllTextAsync(destination, "fixture"); Interlocked.Increment(ref successes);
+    }
+}
+
+sealed class ConcurrentBackupFixtureGateway : IBackupGateway
+{
+    private readonly BackupFixtureGateway inner = new();
+    private int active;
+    private readonly object sync = new();
+    public int Maximum { get; private set; }
+    public int Successes => inner.Successes;
+    public long SessionVersion => inner.SessionVersion;
+    public Task<AccountInfo> AccountAsync() => inner.AccountAsync();
+    public Task<FavoriteContents> FavoritesAsync(long folder, CancellationToken cancellation) => inner.FavoritesAsync(folder, cancellation);
+    public Task<VideoInfo> VideoAsync(string bvid) => inner.VideoAsync(bvid);
+    public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => inner.StreamsAsync(bvid, page);
+    public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
+    public Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => inner.IsCompleteVideoAsync(path, duration, cancellation);
+    public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    {
+        var count = Interlocked.Increment(ref active);
+        lock (sync) Maximum = Math.Max(Maximum, count);
+        try { await Task.Delay(150, cancellation); await inner.DownloadWithinSlotAsync(video, audio, destination, cancellation, canStart); }
+        finally { Interlocked.Decrement(ref active); }
     }
 }

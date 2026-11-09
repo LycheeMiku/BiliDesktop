@@ -9,7 +9,7 @@ namespace BiliDesktop;
 
 public static class AppVersion
 {
-    public const string Current = "beta1";
+    public const string Current = "beta2";
 }
 
 public record AvailableRelease(string Version, DateTimeOffset PublishedAt, string Notes)

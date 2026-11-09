@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 
 namespace BiliDesktop;
 
-public record VideoPage(long Cid, string Label, string? Bvid = null, long? EpisodeId = null, long? CourseAid = null, bool Available = true, bool CheckPaidPreview = false);
+public record VideoPage(long Cid, string Label, string? Bvid = null, long? EpisodeId = null, long? CourseAid = null, bool Available = true, bool CheckPaidPreview = false, double? DurationSeconds = null);
 public record VideoInfo(string Bvid, string Title, string Owner, string CoverUrl, IReadOnlyList<VideoPage> Pages, long? OwnerId, long? CollectionId, string? CollectionTitle = null, int? CollectionNumber = null, string? CollectionItemTitle = null);
 public record CollectionVideo(string Bvid, string Title, string? CollectionTitle = null, int? CollectionNumber = null);
 public record AccountInfo(long Mid, string Name);
@@ -425,7 +425,7 @@ public sealed class BiliApi
             if (bvid is null || !Regex.IsMatch(bvid, @"^BV[0-9A-Za-z]{10}$", RegexOptions.CultureInvariant)) throw new InvalidOperationException("接口未返回有效的 BV 号。");
         }
         var paid = data.TryGetProperty("rights", out var rights) && rights.ValueKind == JsonValueKind.Object && rights.TryGetProperty("ugc_pay", out var payment) && (payment.ValueKind == JsonValueKind.True || payment.ValueKind == JsonValueKind.Number && payment.TryGetInt32(out var paidFlag) && paidFlag != 0);
-        var pages = data.GetProperty("pages").EnumerateArray().Select(p => new VideoPage(p.GetProperty("cid").GetInt64(), $"P{p.GetProperty("page").GetInt32()} · {p.GetProperty("part").GetString()}", CheckPaidPreview: paid)).ToList();
+        var pages = data.GetProperty("pages").EnumerateArray().Select(p => new VideoPage(p.GetProperty("cid").GetInt64(), $"P{p.GetProperty("page").GetInt32()} · {p.GetProperty("part").GetString()}", CheckPaidPreview: paid, DurationSeconds: p.TryGetProperty("duration", out var duration) && duration.ValueKind == JsonValueKind.Number && duration.TryGetDouble(out var seconds) && double.IsFinite(seconds) && seconds > 0 ? seconds : null)).ToList();
         var owner = data.GetProperty("owner");
         long? mid = owner.TryGetProperty("mid", out var midValue) && midValue.TryGetInt64(out var parsedMid) ? parsedMid : null;
         long? seasonId = data.TryGetProperty("ugc_season", out var season) && season.ValueKind == JsonValueKind.Object && season.TryGetProperty("id", out var id) && id.TryGetInt64(out var parsedId) ? parsedId : null;

@@ -38,6 +38,9 @@ public sealed class BackupStore
                 rule_id INTEGER NOT NULL REFERENCES backup_rules(id) ON DELETE CASCADE,
                 bvid TEXT NOT NULL, cid INTEGER NOT NULL, path TEXT NOT NULL,
                 PRIMARY KEY(rule_id,bvid,cid));
+            CREATE TABLE IF NOT EXISTS favorite_files (
+                account_id INTEGER NOT NULL, folder_id INTEGER NOT NULL, bvid TEXT NOT NULL, cid INTEGER NOT NULL,
+                path TEXT NOT NULL, PRIMARY KEY(account_id,folder_id,bvid,cid));
             CREATE TABLE IF NOT EXISTS keyword_rules (
                 id INTEGER PRIMARY KEY, keyword TEXT NOT NULL, since_unix INTEGER NOT NULL, directory TEXT NOT NULL,
                 interval_minutes INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, next_run INTEGER NOT NULL DEFAULT 0,
@@ -85,7 +88,7 @@ public sealed class BackupStore
         var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
         using var db = Open(); using var transaction = db.BeginTransaction(); using var cmd = db.CreateCommand();
         cmd.Transaction = transaction;
-        cmd.CommandText = "INSERT INTO backup_rules(account_id,folder_id,folder_title,directory,interval_minutes) VALUES($account,$folder,$title,$dir,$interval) ON CONFLICT(account_id,folder_id,directory) DO NOTHING";
+        cmd.CommandText = "INSERT OR IGNORE INTO backup_rules(account_id,folder_id,folder_title,directory,interval_minutes) VALUES($account,$folder,$title,$dir,$interval)";
         cmd.Parameters.AddWithValue("$account", account); var id = cmd.Parameters.Add("$folder", SqliteType.Integer); var title = cmd.Parameters.Add("$title", SqliteType.Text);
         cmd.Parameters.AddWithValue("$dir", path); cmd.Parameters.AddWithValue("$interval", minutes);
         var added = 0;
@@ -124,10 +127,45 @@ public sealed class BackupStore
         cmd.Parameters.AddWithValue("$id", id); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid);
         return cmd.ExecuteScalar() is string saved && File.Exists(saved);
     }
+    public string? CompletedPath(long id, string bvid, long cid)
+    {
+        using var db = Open(); using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT path FROM backup_completed WHERE rule_id=$id AND bvid=$bvid AND cid=$cid";
+        cmd.Parameters.AddWithValue("$id", id); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid);
+        return cmd.ExecuteScalar() as string;
+    }
+    public IReadOnlyList<string> CompletedPaths(long id)
+    {
+        using var db = Open(); using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT DISTINCT path FROM backup_completed WHERE rule_id=$id";
+        cmd.Parameters.AddWithValue("$id", id);
+        using var reader = cmd.ExecuteReader(); var paths = new List<string>();
+        while (reader.Read()) paths.Add(reader.GetString(0));
+        return paths;
+    }
+    public void ForgetFavoriteFile(long account, long folder, string path)
+    {
+        using var db = Open(); using var cmd = db.CreateCommand();
+        cmd.CommandText = "DELETE FROM favorite_files WHERE account_id=$account AND folder_id=$folder AND path=$path";
+        cmd.Parameters.AddWithValue("$account", account); cmd.Parameters.AddWithValue("$folder", folder); cmd.Parameters.AddWithValue("$path", path); cmd.ExecuteNonQuery();
+    }
+    public string? FavoriteFile(long account, long folder, string bvid, long cid)
+    {
+        using var db = Open(); using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT path FROM favorite_files WHERE account_id=$account AND folder_id=$folder AND bvid=$bvid AND cid=$cid";
+        cmd.Parameters.AddWithValue("$account", account); cmd.Parameters.AddWithValue("$folder", folder); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid);
+        return cmd.ExecuteScalar() as string;
+    }
+    public void RecordFavoriteFile(long account, long folder, string bvid, long cid, string path)
+    {
+        using var db = Open(); using var cmd = db.CreateCommand();
+        cmd.CommandText = "INSERT OR REPLACE INTO favorite_files(account_id,folder_id,bvid,cid,path) VALUES($account,$folder,$bvid,$cid,$path)";
+        cmd.Parameters.AddWithValue("$account", account); cmd.Parameters.AddWithValue("$folder", folder); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid); cmd.Parameters.AddWithValue("$path", Path.GetFullPath(path)); cmd.ExecuteNonQuery();
+    }
     public void MarkCompleted(long id, string bvid, long cid, string path)
     {
         using var db = Open(); using var cmd = db.CreateCommand();
-        cmd.CommandText = "INSERT INTO backup_completed(rule_id,bvid,cid,path) SELECT $id,$bvid,$cid,$path WHERE EXISTS(SELECT 1 FROM backup_rules WHERE id=$id) ON CONFLICT(rule_id,bvid,cid) DO UPDATE SET path=excluded.path";
+        cmd.CommandText = "INSERT OR REPLACE INTO backup_completed(rule_id,bvid,cid,path) SELECT $id,$bvid,$cid,$path WHERE EXISTS(SELECT 1 FROM backup_rules WHERE id=$id)";
         cmd.Parameters.AddWithValue("$id", id); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid); cmd.Parameters.AddWithValue("$path", path); cmd.ExecuteNonQuery();
     }
 
@@ -195,7 +233,7 @@ public sealed class BackupStore
     public void MarkKeywordCompleted(long id, string bvid, long cid, string path)
     {
         using var db = Open(); using var cmd = db.CreateCommand();
-        cmd.CommandText = "INSERT INTO keyword_completed(rule_id,bvid,cid,path) SELECT $id,$bvid,$cid,$path WHERE EXISTS(SELECT 1 FROM keyword_rules WHERE id=$id) ON CONFLICT(rule_id,bvid,cid) DO UPDATE SET path=excluded.path";
+        cmd.CommandText = "INSERT OR REPLACE INTO keyword_completed(rule_id,bvid,cid,path) SELECT $id,$bvid,$cid,$path WHERE EXISTS(SELECT 1 FROM keyword_rules WHERE id=$id)";
         cmd.Parameters.AddWithValue("$id", id); cmd.Parameters.AddWithValue("$bvid", bvid); cmd.Parameters.AddWithValue("$cid", cid); cmd.Parameters.AddWithValue("$path", path); cmd.ExecuteNonQuery();
     }
 }

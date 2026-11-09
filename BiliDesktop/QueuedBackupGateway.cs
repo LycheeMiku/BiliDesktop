@@ -21,8 +21,9 @@ public sealed class QueuedBackupGateway(BiliApi api, DownloadQueue? taskQueue = 
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => inner.StreamsAsync(bvid, page);
     public Task<VideoSearchPage> SearchAsync(string keyword, int page) => inner.SearchAsync(keyword, page);
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => EnqueueAsync(work, cancellation, canStart, Localizer.Translate("自动下载"), AppSettings.LoadDownloadDirectory());
+    public Task InBackupDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory, long ruleId) => EnqueueAsync(work, cancellation, canStart, title, directory, ruleId);
     public Task InKeywordDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory) => EnqueueAsync(work, cancellation, canStart, title, directory);
-    private async Task EnqueueAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory)
+    private async Task EnqueueAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory, long? backupRuleId = null)
     {
         var entry = (taskQueue ?? DownloadQueue.Shared).Enqueue(title, directory, async (control, progress) =>
         {
@@ -30,7 +31,7 @@ public sealed class QueuedBackupGateway(BiliApi api, DownloadQueue? taskQueue = 
             var previous = current.Value; var context = new Context(control, progress); current.Value = context;
             try { await MediaDownload.InSlotAsync(work, control.Token, canStart, control); if (context.Destination is null) control.MarkSkipped(); return context.Destination; }
             finally { current.Value = previous; }
-        });
+        }, backupRuleId);
         await entry.Completion;
         cancellation.ThrowIfCancellationRequested();
         if (entry.State == DownloadState.Canceled) throw new InvalidOperationException("用户取消下载。");

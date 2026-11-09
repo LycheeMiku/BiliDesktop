@@ -51,7 +51,7 @@ public partial class DownloadQueueWindow : Window
         SelectAll.IsEnabled = queue.Items.Count > 0;
         PauseButton.IsEnabled = entries.Any(x => x.CanPause);
         ResumeButton.IsEnabled = entries.Any(x => x.State == DownloadState.Paused);
-        RetryButton.IsEnabled = entries.Any(x => x.State is DownloadState.Failed or DownloadState.Canceled or DownloadState.Skipped);
+        RetryButton.IsEnabled = entries.Any(x => x.CanRetry);
         CancelButton.IsEnabled = entries.Any(x => x.State is DownloadState.Waiting or DownloadState.Running or DownloadState.Paused);
         OpenButton.IsEnabled = entries.Any(IsDeletable);
         FolderButton.IsEnabled = entries.Any(HasFolder);
@@ -76,7 +76,7 @@ public partial class DownloadQueueWindow : Window
     }
     private void Pause_Click(object sender, RoutedEventArgs e) => Perform(x => x.CanPause, x => x.Pause());
     private void Resume_Click(object sender, RoutedEventArgs e) => Perform(x => x.State == DownloadState.Paused, x => x.Resume());
-    private void Retry_Click(object sender, RoutedEventArgs e) => Perform(x => x.State is DownloadState.Failed or DownloadState.Canceled or DownloadState.Skipped, x => x.Retry());
+    private void Retry_Click(object sender, RoutedEventArgs e) => Perform(x => x.CanRetry, x => x.Retry());
     private void Cancel_Click(object sender, RoutedEventArgs e) => Perform(x => x.State is DownloadState.Waiting or DownloadState.Running or DownloadState.Paused, x => x.Cancel());
     private void Open_Click(object sender, RoutedEventArgs e) => Perform(IsDeletable, x => openFile(x.Destination));
     private static void OpenLocation(string directory) => Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });

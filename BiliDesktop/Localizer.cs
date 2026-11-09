@@ -27,6 +27,16 @@ public static class Localizer
 更新检查失败|更新檢查失敗|Update check failed
 更新检查失败，请检查网络连接后重试。|更新檢查失敗，請檢查網路連線後重試。|Update check failed. Check the network connection and try again.
 关闭|關閉|Close
+删除备份规则|刪除備份規則|Delete backup rules
+确定删除所选的 {0} 条备份规则？|確定刪除所選的 {0} 條備份規則？|Delete the {0} selected backup rules?
+将停止所选的 {0} 条规则，不再添加任务，并取消其等待中和正在进行的下载。请选择对已下载文件的处理方式。|將停止所選的 {0} 條規則，不再新增工作，並取消其等待中和正在進行的下載。請選擇如何處理已下載的檔案。|The {0} selected rules will stop adding tasks, and their queued and active downloads will be canceled. Choose how to handle downloaded files.
+删除文件会永久删除这些规则记录的备份文件，包括曾经匹配的手动下载文件；其他规则可能也在使用这些文件。|刪除檔案會永久刪除這些規則記錄的備份檔案，包括先前比對的手動下載檔案；其他規則可能也在使用這些檔案。|Deleting files permanently removes files recorded by these rules, including matched manual downloads; other rules may also use them.
+取消下载并保留文件|取消下載並保留檔案|Cancel downloads and keep files
+取消下载并删除文件|取消下載並刪除檔案|Cancel downloads and delete files
+正在取消备份下载…|正在取消備份下載…|Canceling backup downloads…
+已删除 {0} 条规则和 {1} 个文件。|已刪除 {0} 條規則和 {1} 個檔案。|Deleted {0} rules and {1} files.
+规则已删除，下载已取消，文件已保留。|規則已刪除，下載已取消，檔案已保留。|Rules deleted, downloads canceled, files kept.
+删除未完成，请检查规则和文件：|刪除未完成，請檢查規則和檔案：|Deletion incomplete; check the rules and files: 
 关于|關於|About
 版本|版本|Version
 开发者仓库|開發者儲存庫|Developer repository
@@ -346,6 +356,7 @@ User-Agent 已应用|User-Agent 已套用|User-Agent applied
 已停止排队，正在等待已开始的任务…|已停止排隊，正在等待已開始的工作…|Queue stopped; waiting for running jobs…
 已暂停；正在下载的文件会完成。|已暫停；正在下載的檔案會完成。|Paused; active downloads will finish.
 规则已启用|規則已啟用|Rule enabled
+规则状态已更新|規則狀態已更新|Rule states updated
 规则已添加|規則已新增|Rule added
 全部添加规则|全部新增規則|Add all rules
 请先读取收藏夹。|請先讀取收藏夾。|Load the folders first.
@@ -548,8 +559,8 @@ WBI 密钥无效|WBI 金鑰無效|Invalid WBI key
         if (part.Success) return $"{part.Groups[1]}/{part.Groups[2]} · {Dynamic(part.Groups[3].Value)}";
         var partLookup = Regex.Match(source, @"^正在获取分 P (\d+)/(\d+) 的流…$");
         if (partLookup.Success) return tw ? $"正在取得分 P {partLookup.Groups[1]}/{partLookup.Groups[2]} 的串流…" : $"Loading streams for part {partLookup.Groups[1]}/{partLookup.Groups[2]}…";
-        var totals = Regex.Match(source, @"^新增 (\d+)，失败 (\d+)，已有但未登记 (\d+)，失效 (\d+)，其他类型 (\d+)(.*)$");
-        if (totals.Success) return tw ? $"新增 {totals.Groups[1]}，失敗 {totals.Groups[2]}，已有但未登記 {totals.Groups[3]}，失效 {totals.Groups[4]}，其他類型 {totals.Groups[5]}{totals.Groups[6]}" : $"Added {totals.Groups[1]}, failed {totals.Groups[2]}, existing untracked {totals.Groups[3]}, invalid {totals.Groups[4]}, other types {totals.Groups[5]}{totals.Groups[6]}";
+        var totals = Regex.Match(source, @"^新增 (\d+)，失败 (\d+)，已有完整 (\d+)，失效 (\d+)，其他类型 (\d+)(.*)$");
+        if (totals.Success) return tw ? $"新增 {totals.Groups[1]}，失敗 {totals.Groups[2]}，已有完整 {totals.Groups[3]}，失效 {totals.Groups[4]}，其他類型 {totals.Groups[5]}{totals.Groups[6]}" : $"Added {totals.Groups[1]}, failed {totals.Groups[2]}, complete existing {totals.Groups[3]}, invalid {totals.Groups[4]}, other types {totals.Groups[5]}{totals.Groups[6]}";
         var matches = Regex.Match(source, @"^匹配 (\d+)，新增 (\d+)，失败 (\d+)，已有但未登记 (\d+)(.*)$");
         if (matches.Success) return tw ? $"符合 {matches.Groups[1]}，新增 {matches.Groups[2]}，失敗 {matches.Groups[3]}，已有但未登記 {matches.Groups[4]}{matches.Groups[5]}" : $"Matched {matches.Groups[1]}, added {matches.Groups[2]}, failed {matches.Groups[3]}, existing untracked {matches.Groups[4]}{matches.Groups[5]}";
         var total = Regex.Match(source, @"^(共|共读取|合集共|本页) (\d+) (个任务|个收藏夹|个视频|条)$");

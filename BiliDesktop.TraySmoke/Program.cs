@@ -76,6 +76,8 @@ internal static class Program
             TestSingletonDownloadWindow(liveRoot);
             TestModelessQr();
             PumpUntil(TestKeywordQueueAsync(liveRoot));
+            PumpUntil(TestFavoriteBackupQueueAsync(liveRoot));
+            PumpUntil(TestBackupRuleRemovalAsync(liveRoot));
             TestSearchPreview(args.Contains("--render-search"));
             TestFavoritesAndBackup(liveRoot);
             var keywordStore = new BackupStore(System.IO.Path.Combine(liveRoot, "keyword-window.db"));
@@ -413,7 +415,7 @@ internal static class Program
             if (link.NavigateUri.AbsoluteUri != url) throw new Exception("Incorrect About repository link");
             link.RaiseEvent(new System.Windows.Navigation.RequestNavigateEventArgs(link.NavigateUri, null) { RoutedEvent = System.Windows.Documents.Hyperlink.RequestNavigateEvent });
         }
-        if (opened.Count != links.Count || ((System.Windows.Controls.TextBlock)about.FindName("VersionValue")).Text.Trim() != "beta1") throw new Exception("About repository links or version failed");
+        if (opened.Count != links.Count || ((System.Windows.Controls.TextBlock)about.FindName("VersionValue")).Text.Trim() != AppVersion.Current) throw new Exception("About repository links or version failed");
         foreach (var language in new[] { "zh-CN", "zh-TW", "en" })
         {
             Localizer.Apply(language); Pump();
@@ -437,11 +439,11 @@ internal static class Program
     }
     private static void TestUpdateWindows(bool render)
     {
-        var release = new AvailableRelease("beta2", new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero), "更新一\n- 更新二");
+        var release = new AvailableRelease("beta3", new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero), "更新一\n- 更新二");
         var opened = new List<Uri>();
         var githubDialog = new UpdateWindow(release, null, uri => opened.Add(uri)) { ShowInTaskbar = false, ShowActivated = false };
         githubDialog.Show(); Pump();
-        if (!((System.Windows.Controls.TextBlock)githubDialog.FindName("CurrentVersion")).Text.Contains("beta1", StringComparison.Ordinal) || !((System.Windows.Controls.TextBlock)githubDialog.FindName("NewVersion")).Text.Contains("beta2", StringComparison.Ordinal) || !((System.Windows.Controls.TextBlock)githubDialog.FindName("Published")).Text.Contains(release.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm"), StringComparison.Ordinal) || ((System.Windows.Controls.TextBox)githubDialog.FindName("Notes")).Text != release.Notes) throw new Exception("Update dialog omitted version, date or release notes");
+        if (!((System.Windows.Controls.TextBlock)githubDialog.FindName("CurrentVersion")).Text.Contains(AppVersion.Current, StringComparison.Ordinal) || !((System.Windows.Controls.TextBlock)githubDialog.FindName("NewVersion")).Text.Contains(release.Version, StringComparison.Ordinal) || !((System.Windows.Controls.TextBlock)githubDialog.FindName("Published")).Text.Contains(release.PublishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm"), StringComparison.Ordinal) || ((System.Windows.Controls.TextBox)githubDialog.FindName("Notes")).Text != release.Notes) throw new Exception("Update dialog omitted version, date or release notes");
         if (render)
         {
             Localizer.Apply("zh-CN"); Pump(); githubDialog.UpdateLayout();
@@ -596,6 +598,98 @@ internal static class Program
         }
         finally { release.TrySetResult(); if (run is not null) await run; await blocker; MediaDownload.Configure(new(4, 32)); }
     }
+    private static async Task TestFavoriteBackupQueueAsync(string root)
+    {
+        var output = System.IO.Path.Combine(root, "favorite-queue-output"); System.IO.Directory.CreateDirectory(output);
+        var store = new BackupStore(System.IO.Path.Combine(root, "favorite-queue-test.db"));
+        store.Add(123, new FavoriteFolder(456, "Created folder", 1), output, 5);
+        var api = new BiliApi(new FavoritesUiFixture());
+        var queue = new DownloadQueue(System.IO.Path.Combine(root, "favorite-queue-history.json"));
+        var window = new DownloadQueueWindow(queue) { ShowInTaskbar = false, ShowActivated = false }; window.Show();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        MediaDownload.Configure(new(8, 16, 1));
+        var blocker = MediaDownload.InSlotAsync(async () => { held.TrySetResult(); await release.Task; });
+        Task? run = null;
+        try
+        {
+            await held.Task;
+            run = new BackupEngine(store, new QueuedBackupGateway(api, queue)).RunDueAsync();
+            await WaitForAsync(() => queue.Items.Count == 1);
+            var grid = (System.Windows.Controls.DataGrid)window.FindName("Tasks");
+            if (grid.Items.Count != 1 || queue.Items[0].State != DownloadState.Waiting || !queue.Items[0].Title.Contains("fixture", StringComparison.Ordinal) || queue.Items[0].BackupRuleId != store.List().Single().Id) throw new Exception("Favorite backup was not displayed or linked to its rule in the download queue");
+            queue.Items[0].Cancel(); store.SetEnabled(store.List().Single().Id, false); release.TrySetResult();
+            await Task.WhenAll(run, blocker);
+            Console.WriteLine("Favorite backup entries appear in the download task window while waiting.");
+        }
+        finally { release.TrySetResult(); if (run is not null) await run; await blocker; window.Close(); MediaDownload.Configure(new(4, 32)); }
+    }
+    private static async Task TestBackupRuleRemovalAsync(string root)
+    {
+        var baseDir = System.IO.Path.Combine(root, "remove-backup"); System.IO.Directory.CreateDirectory(baseDir);
+        var outsideDir = System.IO.Path.Combine(root, "outside-backup"); System.IO.Directory.CreateDirectory(outsideDir);
+        var store = new BackupStore(System.IO.Path.Combine(root, "remove-backup.db"));
+        var queue = new DownloadQueue(System.IO.Path.Combine(root, "remove-backup-history.json"));
+        store.Add(123, new FavoriteFolder(3001, "keep", 1), baseDir, 5);
+        var keepRule = store.List().Single();
+        var keepFile = System.IO.Path.Combine(baseDir, "keep.mp4"); System.IO.File.WriteAllText(keepFile, "keep");
+        store.MarkCompleted(keepRule.Id, "BV1xx411c7mD", 1, keepFile);
+        var chosen = (BackupRemovalChoice?)null; var confirm = false; var chooseCalls = 0;
+        var window = new BackupWindow(new BiliApi(new FavoritesUiFixture()), store, () => { }, queue, _ => confirm, _ => { chooseCalls++; return chosen; }) { ShowInTaskbar = false, ShowActivated = false };
+        window.Show();
+        var dialog = new BackupRemovalDialog(window, 1);
+        var dialogPanel = (System.Windows.Controls.StackPanel)dialog.Content;
+        var dialogButtons = ((System.Windows.Controls.WrapPanel)dialogPanel.Children[2]).Children.OfType<System.Windows.Controls.Button>().ToArray();
+        if (dialogButtons.Length != 3 || !Equals(dialogButtons[0].Content, Localizer.Translate("取消下载并保留文件")) || !Equals(dialogButtons[1].Content, Localizer.Translate("取消下载并删除文件")) || !dialogButtons[2].IsCancel) throw new Exception("Backup removal file choices were not clearly presented");
+        var grid = (System.Windows.Controls.DataGrid)window.FindName("Rules");
+        await WaitForAsync(() => grid.Items.Count == 1 && ((System.Windows.Controls.Button)window.FindName("RemoveRule")).IsEnabled);
+        grid.SelectedItem = grid.Items[0];
+        var button = (System.Windows.Controls.Button)window.FindName("RemoveRule");
+        button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        if (chooseCalls != 0 || store.List().Count != 1) throw new Exception("Refusing the first deletion confirmation changed the rule");
+        confirm = true;
+        button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        if (chooseCalls != 1 || store.List().Count != 1 || !store.List().Single().Enabled) throw new Exception("Canceling the second deletion confirmation changed the rule");
+        var active = queue.Enqueue("backup", baseDir, async (control, _) => { await Task.Delay(Timeout.Infinite, control.Token); return null; }, keepRule.Id);
+        var unrelated = queue.Enqueue("unrelated", baseDir, async (control, _) => { await Task.Delay(Timeout.Infinite, control.Token); return null; });
+        chosen = BackupRemovalChoice.KeepFiles;
+        button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        await WaitForAsync(() => store.List().Count == 0);
+        await active.Completion;
+        if (active.State != DownloadState.Canceled || active.CanRetry || !System.IO.File.Exists(keepFile) || unrelated.State == DownloadState.Canceled) throw new Exception("Rule removal did not cancel only its downloads and preserve files");
+        active.Retry(); if (active.State != DownloadState.Canceled) throw new Exception("Deleted rule's download was allowed to restart");
+        store.Add(123, new FavoriteFolder(3002, "delete", 1), baseDir, 5);
+        var deleteRule = store.List().Single();
+        var deleteFile = System.IO.Path.Combine(baseDir, "delete.mp4"); var untracked = System.IO.Path.Combine(baseDir, "untracked.mp4");
+        System.IO.File.WriteAllText(deleteFile, "delete"); System.IO.File.WriteAllText(untracked, "keep");
+        store.MarkCompleted(deleteRule.Id, "BV1xx411c7mD", 2, deleteFile); store.RecordFavoriteFile(123, 3002, "BV1xx411c7mD", 2, deleteFile);
+        typeof(BackupWindow).GetMethod("RefreshRules", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(window, null);
+        grid.SelectedItem = grid.Items[0]; chosen = BackupRemovalChoice.DeleteFiles;
+        button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        await WaitForAsync(() => store.List().Count == 0);
+        if (System.IO.File.Exists(deleteFile) || !System.IO.File.Exists(untracked) || !System.IO.File.Exists(keepFile) || store.FavoriteFile(123, 3002, "BV1xx411c7mD", 2) is not null || unrelated.State == DownloadState.Canceled) throw new Exception("Deleting rule files affected unrelated files or failed to clean its record");
+        store.Add(123, new FavoriteFolder(3003, "unsafe", 1), baseDir, 5);
+        var unsafeRule = store.List().Single(); var outsideFile = System.IO.Path.Combine(outsideDir, "outside.mp4"); System.IO.File.WriteAllText(outsideFile, "outside");
+        store.MarkCompleted(unsafeRule.Id, "BV1xx411c7mD", 3, outsideFile);
+        typeof(BackupWindow).GetMethod("RefreshRules", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.Invoke(window, null);
+        grid.SelectedItem = grid.Items[0]; button.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        await WaitForAsync(() => !store.List().Single().Enabled);
+        if (!System.IO.File.Exists(outsideFile) || store.List().Count != 1 || !((System.Windows.Controls.TextBlock)window.FindName("Status")).Text.Contains("outside.mp4")) throw new Exception("Unsafe recorded path was deleted or failure was not reported");
+        store.Remove(unsafeRule.Id);
+        store.Add(123, new FavoriteFolder(3004, "checking", 1), baseDir, 5);
+        var checkingRule = store.List().Single();
+        var checkingFile = System.IO.Path.Combine(baseDir, "checking.mp4"); System.IO.File.WriteAllText(checkingFile, "fixture");
+        store.MarkCompleted(checkingRule.Id, "BV1xx411c7mD", 1, checkingFile);
+        var checkingGateway = new DeferredBackupValidationGateway();
+        var running = new BackupEngine(store, checkingGateway).RunDueAsync();
+        await checkingGateway.CheckStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await BackupRuleRemoval.RemoveAsync(store, queue, [checkingRule], false);
+        checkingGateway.CheckRelease.TrySetResult(true);
+        await running;
+        if (checkingGateway.DownloadAttempts != 0 || store.List().Count != 0 || !System.IO.File.Exists(checkingFile)) throw new Exception("Backup continued to enqueue after a rule was removed during file validation");
+        unrelated.Cancel(); await unrelated.Completion; window.Close();
+        Console.WriteLine("Backup deletion confirmations, cancellation, file choices, retry guards and unsafe-path protection passed.");
+    }
     private static void TestFavoritesAndBackup(string root)
     {
         var store = new BackupStore(System.IO.Path.Combine(root, "favorites-unified.db"));
@@ -622,13 +716,23 @@ internal static class Program
         PumpUntil(window.FetchFolderAsync());
         var batch = Application.Current.Windows.OfType<BatchWindow>().SingleOrDefault();
         if (batch is null || batch.Owner is not null || !window.IsEnabled || ((System.Windows.Controls.DataGrid)batch.FindName("Jobs")).Items.Count != 1) throw new Exception("Unified favorites window did not open independent batch video selection");
+        ((System.Windows.Controls.Button)batch.FindName("Start")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        PumpUntil(WaitForAsync(() => !batch.IsRunning));
+        if (!System.IO.Directory.Exists(BackupEngine.FolderDirectory(root, "Created folder", 456))) throw new Exception("Manual favorites download did not create its dedicated folder");
         batch.Close(); Pump();
+        foreach (var taskWindow in Application.Current.Windows.OfType<DownloadQueueWindow>().ToArray()) taskWindow.Close();
         ((System.Windows.Controls.ComboBox)window.FindName("FolderKind")).SelectedIndex = 1;
         PumpUntil(window.LoadFoldersAsync());
         if ((folders.SelectedItem as FavoriteFolder)?.Id != 789) throw new Exception("Followed favorites were not available in unified window");
         ((System.Windows.Controls.Button)window.FindName("AddAll")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
         PumpUntil(WaitForAsync(() => store.List().Count == 2));
         if (store.List().All(x => x.FolderId != 789)) throw new Exception("Followed favorites could not be added for backup");
+        var selectAll = (System.Windows.Controls.CheckBox)window.FindName("SelectAllRules");
+        selectAll.IsChecked = true;
+        selectAll.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        if (rules.Items.Cast<BackupRuleRow>().Any(row => !row.IsChecked) || rules.Columns.OfType<System.Windows.Controls.DataGridCheckBoxColumn>().Any()) throw new Exception("Backup rule selection or enabled-state display failed");
+        ((System.Windows.Controls.Button)window.FindName("ToggleRule")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        if (rules.Items.Cast<BackupRuleRow>().Any(row => !row.IsChecked) || store.List().Single(r => r.FolderId == 456).Enabled == false || store.List().Single(r => r.FolderId == 789).Enabled) throw new Exception("Checked backup rules were not retained or toggled");
         window.Close(); Pump();
         var fallback = new BackupWindow(api, null, () => { }) { ShowInTaskbar = false, ShowActivated = false };
         fallback.Show(); Pump();
@@ -760,6 +864,21 @@ internal static class Program
     private static extern int GetWindowLong(IntPtr window, int index);
 }
 
+sealed class DeferredBackupValidationGateway : IBackupGateway
+{
+    public TaskCompletionSource CheckStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource<bool> CheckRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public int DownloadAttempts { get; private set; }
+    public long SessionVersion => 1;
+    public Task<AccountInfo> AccountAsync() => Task.FromResult(new AccountInfo(123, "fixture"));
+    public Task<FavoriteContents> FavoritesAsync(long folder, CancellationToken cancellation) => Task.FromResult(new FavoriteContents([new("BV1xx411c7mD", "fixture")], 0, 0));
+    public Task<VideoInfo> VideoAsync(string bvid) => Task.FromResult(new VideoInfo(bvid, "fixture", "owner", "", [new(1, "P1 · one")], 123, null));
+    public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => throw new Exception("Removed rule requested streams");
+    public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) { DownloadAttempts++; return Task.CompletedTask; }
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart) => throw new Exception("Removed rule started a download");
+    public async Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) { CheckStarted.TrySetResult(); return await CheckRelease.Task.WaitAsync(cancellation); }
+}
+
 sealed class UpdateUiFixture : HttpMessageHandler
 {
     public int Calls { get; private set; }
@@ -768,7 +887,7 @@ sealed class UpdateUiFixture : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Calls++;
-        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta2","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
+        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta3","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
     }
 }
 
@@ -852,6 +971,7 @@ sealed class FavoritesUiFixture : HttpMessageHandler
             "/x/v3/fav/folder/created/list-all" => """{"code":0,"data":{"count":1,"list":[{"id":456,"title":"Created folder","media_count":1}]}}""",
             "/x/v3/fav/folder/collected/list" => """{"code":0,"data":{"count":1,"list":[{"id":789,"title":"Followed folder","media_count":1,"state":0}]}}""",
             "/x/v3/fav/resource/list" => """{"code":0,"data":{"info":{"media_count":1},"medias":[{"type":2,"attr":0,"bvid":"BV1xx411c7mD","title":"fixture video"}],"has_more":false}}""",
+            "/x/web-interface/view" => """{"code":0,"data":{"bvid":"BV1xx411c7mD","title":"fixture","owner":{"name":"author","mid":123},"pages":[{"cid":1,"page":1,"part":"one"}]}}""",
             _ => throw new InvalidOperationException("Unexpected fixture request: " + request.RequestUri.AbsolutePath)
         };
         return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(json) });

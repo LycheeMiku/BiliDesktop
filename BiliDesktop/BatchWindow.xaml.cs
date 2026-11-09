@@ -14,14 +14,19 @@ public partial class BatchWindow : Window
     private readonly VideoInfo? groupVideo;
     private readonly string? collectionTitle;
     private readonly DownloadQueue taskQueue;
+    private readonly FavoriteFolder? favoriteFolder;
+    private readonly long? favoriteAccountId;
+    private readonly BackupStore? favoriteStore;
+    private readonly long favoriteSession;
     private CancellationTokenSource? cancellation;
     private bool running;
     internal bool IsRunning => running;
 
-    public BatchWindow(BiliApi api, VideoInfo? video, IReadOnlyList<CollectionVideo>? collection, VideoStream? preferredVideo, AudioStream? preferredAudio, DownloadQueue? taskQueue = null)
+    public BatchWindow(BiliApi api, VideoInfo? video, IReadOnlyList<CollectionVideo>? collection, VideoStream? preferredVideo, AudioStream? preferredAudio, DownloadQueue? taskQueue = null, FavoriteFolder? favoriteFolder = null, long? favoriteAccountId = null, BackupStore? favoriteStore = null, string? initialDirectory = null)
     {
         if (video is null && collection is null) throw new ArgumentException("没有批量下载条目。");
         this.api = api; this.preferredVideo = preferredVideo; this.preferredAudio = preferredAudio; groupVideo = collection is null ? video : null; this.taskQueue = taskQueue ?? DownloadQueue.Shared;
+        this.favoriteFolder = favoriteFolder; this.favoriteAccountId = favoriteAccountId; this.favoriteStore = favoriteStore; favoriteSession = api.SessionVersion;
         collectionTitle = collection is null ? null : (!string.IsNullOrWhiteSpace(video?.CollectionTitle) ? video.CollectionTitle : collection.Select(x => x.CollectionTitle).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)));
         InitializeComponent();
         QueueButton.SetResourceReference(System.Windows.Controls.ContentControl.ContentProperty, Localizer.Key("下载任务"));
@@ -30,7 +35,7 @@ public partial class BatchWindow : Window
             : collection.Select((v, i) => new BatchJob { Number = i + 1, Bvid = v.Bvid, Label = v.Title, CollectionTitle = collectionTitle ?? v.CollectionTitle, CollectionNumber = v.CollectionNumber, CollectionItemTitle = v.CollectionNumber.HasValue ? v.Title : null }).ToList();
         if (collection is not null) Title = Localizer.Translate("合集批量下载");
         Jobs.ItemsSource = jobs;
-        try { DirectoryBox.Text = AppSettings.LoadDownloadDirectory(); }
+        try { DirectoryBox.Text = !string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory) ? initialDirectory : AppSettings.LoadDownloadDirectory(); }
         catch (Exception ex) { DirectoryBox.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos); Summary.Text = "读取下载目录失败：" + ex.Message; }
     }
 
@@ -58,10 +63,16 @@ public partial class BatchWindow : Window
         Jobs.CommitEdit(System.Windows.Controls.DataGridEditingUnit.Row, true);
         var chosen = jobs.Where(j => j.Selected).ToArray();
         if (chosen.Length == 0) { Summary.Text = "请至少选择一个条目。"; return; }
+        if (favoriteFolder is not null && api.SessionVersion != favoriteSession) { Summary.Text = "登录会话已变化，请重新读取收藏夹。"; return; }
         var directory = DirectoryBox.Text;
         if (!Directory.Exists(directory)) { Summary.Text = "请选择有效的下载目录。"; return; }
         directory = Path.GetFullPath(directory);
-        if (groupVideo is not null && DownloadNaming.NeedsFolder(groupVideo))
+        if (favoriteFolder is not null)
+        {
+            directory = BackupEngine.FolderDirectory(directory, favoriteFolder.Title, favoriteFolder.Id);
+            try { Directory.CreateDirectory(directory); } catch (Exception ex) { Summary.Text = ex.Message; return; }
+        }
+        else if (groupVideo is not null && DownloadNaming.NeedsFolder(groupVideo))
         {
             directory = DownloadNaming.Folder(directory, groupVideo);
             try { Directory.CreateDirectory(directory); } catch (Exception ex) { Summary.Text = ex.Message; return; }
@@ -107,6 +118,8 @@ public partial class BatchWindow : Window
                             part.Finished = false; part.HasError = false; part.OutputPath = null;
                             await engine.RunJobAsync(part, targetDirectory, mode, format, ua, control, progress, metadata, useNaming: true, audioOptions: audioOptions);
                             if (part.HasError) throw new InvalidOperationException(part.Status);
+                            if (mode == 0 && part.OutputPath is not null && part.Page is not null && favoriteFolder is not null && favoriteAccountId is > 0 && favoriteStore is not null)
+                                favoriteStore.RecordFavoriteFile(favoriteAccountId.Value, favoriteFolder.Id, part.Bvid, part.Page.Cid, part.OutputPath);
                             if (part.OutputPath is null) control.MarkSkipped();
                             return part.OutputPath;
                         });

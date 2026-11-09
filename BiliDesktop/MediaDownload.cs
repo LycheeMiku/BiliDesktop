@@ -164,6 +164,28 @@ public static class MediaDownload
     internal static Task ValidateMediaToolsAsync(IProgress<string>? progress = null) =>
         ValidateMediaToolsAsync(() => MediaTools.EnsureAsync(progress), executable => RunAsync(executable, ["-version"], TimeSpan.FromSeconds(10)));
 
+    internal static async Task<bool> ValidateCompleteVideoAsync(string path, double? expectedDuration, CancellationToken cancellation)
+    {
+        if (!File.Exists(path) || new FileInfo(path).Length == 0) return false;
+        await ValidateMediaToolsAsync();
+        try
+        {
+            var probe = await RunAsync("ffprobe", ["-v", "error", "-show_entries", "stream=codec_type:stream_disposition=attached_pic:format=duration", "-of", "json", path], TimeSpan.FromSeconds(30), cancellation);
+            using var data = JsonDocument.Parse(probe);
+            if (!data.RootElement.TryGetProperty("streams", out var streams) || streams.ValueKind != JsonValueKind.Array) return false;
+            var streamList = streams.EnumerateArray().ToArray();
+            var hasVideo = streamList.Any(s => s.TryGetProperty("codec_type", out var type) && type.GetString() == "video" && (!s.TryGetProperty("disposition", out var disposition) || !disposition.TryGetProperty("attached_pic", out var attached) || attached.GetInt32() == 0));
+            var hasAudio = streamList.Any(s => s.TryGetProperty("codec_type", out var type) && type.GetString() == "audio");
+            if (!hasVideo || !hasAudio) return false;
+            if (!data.RootElement.TryGetProperty("format", out var format) || !format.TryGetProperty("duration", out var duration) || !double.TryParse(duration.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds) || !double.IsFinite(seconds) || seconds <= 0) return false;
+            if (expectedDuration is > 0 && seconds + Math.Max(2, Math.Min(30, expectedDuration.Value * 0.02)) < expectedDuration.Value) return false;
+            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-i", path, "-map", "0:V:0", "-map", "0:a:0", "-f", "null", "-"], cancellation: cancellation);
+            return true;
+        }
+        catch (InvalidOperationException) { return false; }
+        catch (JsonException) { return false; }
+    }
+
     internal static async Task ValidateMediaToolsAsync(Func<Task> install, Func<string, Task<string>> execute)
     {
         try

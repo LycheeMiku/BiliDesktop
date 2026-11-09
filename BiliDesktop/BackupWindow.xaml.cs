@@ -5,11 +5,23 @@ using Microsoft.Win32;
 
 namespace BiliDesktop;
 
+public sealed class BackupRuleRow(BackupRule rule, bool isChecked = false) : System.ComponentModel.INotifyPropertyChanged
+{
+    public BackupRule Rule { get; } = rule;
+    public string EnabledText => Localizer.Translate(Rule.Enabled ? "启用" : "已暂停");
+    private bool selected = isChecked;
+    public bool IsChecked { get => selected; set { if (selected == value) return; selected = value; PropertyChanged?.Invoke(this, new(nameof(IsChecked))); } }
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+}
+
 public partial class BackupWindow : Window
 {
     private readonly BiliApi api;
     private readonly BackupStore? store;
     private readonly Action trigger;
+    private readonly DownloadQueue downloadQueue;
+    private readonly Func<int, bool> confirmRemove;
+    private readonly Func<int, BackupRemovalChoice?> chooseRemoval;
     private readonly DispatcherTimer refresh = new() { Interval = TimeSpan.FromSeconds(2) };
     private long? accountId;
     private long? foldersSession;
@@ -17,9 +29,13 @@ public partial class BackupWindow : Window
     private bool busy;
     private CancellationTokenSource? cancellation;
 
-    public BackupWindow(BiliApi api, BackupStore? store, Action trigger)
+    public BackupWindow(BiliApi api, BackupStore? store, Action trigger) : this(api, store, trigger, null, null, null) { }
+    internal BackupWindow(BiliApi api, BackupStore? store, Action trigger, DownloadQueue? queue, Func<int, bool>? confirm, Func<int, BackupRemovalChoice?>? choose)
     {
-        this.api = api; this.store = store; this.trigger = trigger; InitializeComponent();
+        this.api = api; this.store = store; this.trigger = trigger; downloadQueue = queue ?? DownloadQueue.Shared;
+        confirmRemove = confirm ?? (count => MessageBox.Show(this, string.Format(Localizer.Translate("确定删除所选的 {0} 条备份规则？"), count), Localizer.Translate("删除备份规则"), MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes);
+        chooseRemoval = choose ?? (count => { var dialog = new BackupRemovalDialog(this, count); return dialog.ShowDialog() == true ? dialog.Choice : null; });
+        InitializeComponent();
         AddSelected.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("自动备份该收藏夹"));
         AddAll.SetResourceReference(ContentControl.ContentProperty, Localizer.Key("自动备份所有收藏夹"));
         AddAll.SetResourceReference(ToolTipProperty, Localizer.Key("备份当前列表中的所有收藏夹。"));
@@ -33,14 +49,37 @@ public partial class BackupWindow : Window
     }
     private void RefreshRules()
     {
-        try { var id = (Rules.SelectedItem as BackupRule)?.Id; Rules.ItemsSource = store?.List(); if (id.HasValue && Rules.ItemsSource is IEnumerable<BackupRule> rules) Rules.SelectedItem = rules.FirstOrDefault(r => r.Id == id); }
+        try
+        {
+            var id = (Rules.SelectedItem as BackupRuleRow)?.Rule.Id;
+            var checkedIds = (Rules.ItemsSource as IEnumerable<BackupRuleRow> ?? []).Where(r => r.IsChecked).Select(r => r.Rule.Id).ToHashSet();
+            var rows = (store?.List() ?? []).Select(r => new BackupRuleRow(r, checkedIds.Contains(r.Id))).ToArray();
+            Rules.ItemsSource = rows;
+            if (id.HasValue) Rules.SelectedItem = rows.FirstOrDefault(r => r.Rule.Id == id);
+            UpdateSelectAll();
+        }
         catch (Exception ex) { if (!closed) Status.Text = "读取规则失败：" + ex.Message; }
+    }
+    private void UpdateSelectAll()
+    {
+        var rows = (Rules.ItemsSource as IEnumerable<BackupRuleRow> ?? []).ToArray();
+        SelectAllRules.IsChecked = rows.Length > 0 && rows.All(r => r.IsChecked);
+    }
+    private void SelectAllRules_Click(object sender, RoutedEventArgs e)
+    {
+        foreach (var row in Rules.ItemsSource as IEnumerable<BackupRuleRow> ?? []) row.IsChecked = SelectAllRules.IsChecked == true;
+    }
+    private void RuleCheck_Click(object sender, RoutedEventArgs e) => UpdateSelectAll();
+    private BackupRule[] SelectedRules()
+    {
+        var checkedRules = (Rules.ItemsSource as IEnumerable<BackupRuleRow> ?? []).Where(r => r.IsChecked).Select(r => r.Rule).ToArray();
+        return checkedRules.Length > 0 ? checkedRules : Rules.SelectedItem is BackupRuleRow row ? [row.Rule] : [];
     }
     private void FolderKind_Changed(object sender, SelectionChangedEventArgs e) { if (IsInitialized && Folders is not null) { accountId = null; foldersSession = null; Folders.ItemsSource = null; Status.Text = ""; } }
     private void SetBusy(bool value)
     {
         busy = value; LoadFolders.IsEnabled = !value; FolderKind.IsEnabled = !value; Folders.IsEnabled = !value; Fetch.IsEnabled = !value; CancelFetch.IsEnabled = value && cancellation is not null;
-        Interval.IsEnabled = !value && store is not null; BrowseDirectory.IsEnabled = !value && store is not null; AddSelected.IsEnabled = !value && store is not null; AddAll.IsEnabled = !value && store is not null; Rules.IsEnabled = store is not null; RuleActions.IsEnabled = store is not null;
+        Interval.IsEnabled = !value && store is not null; BrowseDirectory.IsEnabled = !value && store is not null; AddSelected.IsEnabled = !value && store is not null; AddAll.IsEnabled = !value && store is not null; Rules.IsEnabled = !value && store is not null; RuleActions.IsEnabled = !value && store is not null;
     }
     private async void LoadFolders_Click(object sender, RoutedEventArgs e) => await LoadFoldersAsync();
     internal async Task LoadFoldersAsync()
@@ -75,7 +114,7 @@ public partial class BackupWindow : Window
             if (closed || token.IsCancellationRequested) return;
             if (api.SessionVersion != session) throw new InvalidOperationException("登录会话已变化，请重新读取收藏夹。");
             Status.Text = $"视频 {result.Videos.Count}，失效 {result.Invalid}，暂不支持的类型 {result.Unsupported}";
-            if (result.Videos.Count > 0) new BatchWindow(api, null, result.Videos, null, null) { Title = Localizer.Translate("收藏夹批量下载") }.Show();
+            if (result.Videos.Count > 0) new BatchWindow(api, null, result.Videos, null, null, favoriteFolder: folder, favoriteAccountId: accountId, favoriteStore: store, initialDirectory: DirectoryBox.Text) { Title = Localizer.Translate("收藏夹批量下载") }.Show();
         }
         catch (OperationCanceledException) { if (!closed) Status.Text = "已停止读取。"; }
         catch (Exception ex) { if (!closed) Status.Text = "读取失败：" + ex.Message; }
@@ -113,22 +152,34 @@ public partial class BackupWindow : Window
     private void Run_Click(object sender, RoutedEventArgs e)
     {
         if (store is null) return;
-        if (Rules.SelectedItem is not BackupRule rule) { Status.Text = "请选择规则。"; return; }
-        try { if (!rule.Enabled) { Status.Text = "请先启用规则。"; return; } if (rule.Status.StartsWith("正在", StringComparison.Ordinal)) { Status.Text = "规则正在检查。"; return; } store.RunNow(rule.Id); RefreshRules(); trigger(); Status.Text = "已安排检查"; }
+        var rules = SelectedRules(); if (rules.Length == 0) { Status.Text = "请选择规则。"; return; }
+        try { var runnable = rules.Where(rule => rule.Enabled && !rule.Status.StartsWith("正在", StringComparison.Ordinal)).ToArray(); if (runnable.Length == 0) { Status.Text = rules.Any(r => r.Enabled) ? "规则正在检查。" : "请先启用规则。"; return; } foreach (var rule in runnable) store.RunNow(rule.Id); RefreshRules(); trigger(); Status.Text = "已安排检查"; }
         catch (Exception ex) { Status.Text = "操作失败：" + ex.Message; }
     }
     private void Toggle_Click(object sender, RoutedEventArgs e)
     {
         if (store is null) return;
-        if (Rules.SelectedItem is not BackupRule rule) { Status.Text = "请选择规则。"; return; }
-        try { store.SetEnabled(rule.Id, !rule.Enabled); RefreshRules(); if (!rule.Enabled) trigger(); Status.Text = rule.Enabled ? "已暂停；正在下载的文件会完成。" : "规则已启用"; }
+        var rules = SelectedRules(); if (rules.Length == 0) { Status.Text = "请选择规则。"; return; }
+        try { foreach (var rule in rules) store.SetEnabled(rule.Id, !rule.Enabled); RefreshRules(); if (rules.Any(r => !r.Enabled)) trigger(); Status.Text = rules.All(r => r.Enabled) ? "已暂停；正在下载的文件会完成。" : rules.All(r => !r.Enabled) ? "规则已启用" : "规则状态已更新"; }
         catch (Exception ex) { Status.Text = "操作失败：" + ex.Message; }
     }
-    private void Remove_Click(object sender, RoutedEventArgs e)
+    private async void Remove_Click(object sender, RoutedEventArgs e)
     {
-        if (store is null) return;
-        if (Rules.SelectedItem is not BackupRule rule) { Status.Text = "请选择规则。"; return; }
-        try { store.Remove(rule.Id); RefreshRules(); Status.Text = "规则已删除；正在下载的文件会完成。"; }
-        catch (Exception ex) { Status.Text = "操作失败：" + ex.Message; }
+        if (store is null || busy) return;
+        var rules = SelectedRules(); if (rules.Length == 0) { Status.Text = "请选择规则。"; return; }
+        if (!confirmRemove(rules.Length)) return;
+        var choice = chooseRemoval(rules.Length);
+        if (choice is null) return;
+        try
+        {
+            SetBusy(true); Status.Text = Localizer.Translate("正在取消备份下载…");
+            var result = await BackupRuleRemoval.RemoveAsync(store, downloadQueue, rules, choice == BackupRemovalChoice.DeleteFiles);
+            RefreshRules();
+            Status.Text = choice == BackupRemovalChoice.DeleteFiles
+                ? string.Format(Localizer.Translate("已删除 {0} 条规则和 {1} 个文件。"), result.RemovedRules, result.DeletedFiles)
+                : Localizer.Translate("规则已删除，下载已取消，文件已保留。");
+        }
+        catch (Exception ex) { RefreshRules(); Status.Text = Localizer.Translate("删除未完成，请检查规则和文件：") + ex.Message; }
+        finally { if (!closed) SetBusy(false); }
     }
 }

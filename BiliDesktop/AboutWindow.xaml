@@ -3,7 +3,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
       <StackPanel>
         <TextBlock Text="BiliDesktop" FontSize="22" FontWeight="SemiBold"/>
-        <StackPanel Orientation="Horizontal" Margin="0,5,0,16"><TextBlock x:Name="VersionLabel"/><TextBlock x:Name="VersionValue" Text="  beta1"/></StackPanel>
+        <StackPanel Orientation="Horizontal" Margin="0,5,0,16"><TextBlock x:Name="VersionLabel"/><TextBlock x:Name="VersionValue"/></StackPanel>
         <TextBlock x:Name="DeveloperLabel" FontWeight="SemiBold" Margin="0,0,0,5"/>
         <TextBlock TextWrapping="Wrap"><Hyperlink x:Name="DeveloperLink" NavigateUri="https://github.com/LycheeMiku/BiliDesktop" RequestNavigate="Link_RequestNavigate">https://github.com/LycheeMiku/BiliDesktop</Hyperlink></TextBlock>
         <TextBlock x:Name="ReferencesLabel" FontSize="16" FontWeight="SemiBold" Margin="0,18,0,8"/>
