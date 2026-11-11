@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Threading;
 using System.Net.Http;
+using System.IO.Pipes;
 using BiliDesktop;
 
 internal static class Program
@@ -8,6 +9,30 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Length == 3 && args[0] is "--elevation-server" or "--elevation-client")
+        {
+            var role = args[0]; var identity = args[1]; var directory = args[2];
+            var elevated = new System.Security.Principal.WindowsPrincipal(System.Security.Principal.WindowsIdentity.GetCurrent()).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            try
+            {
+                using var instance = new SingleInstance(identity);
+                if (role == "--elevation-server")
+                {
+                    if (!instance.IsPrimary) throw new InvalidOperationException("Server did not acquire the mutex.");
+                    instance.StartListening(() => System.IO.File.WriteAllText(System.IO.Path.Combine(directory, "signal.txt"), "received"));
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(directory, "ready.txt"), $"elevated={elevated}");
+                    var end = DateTime.UtcNow.AddMinutes(2);
+                    while (DateTime.UtcNow < end && !System.IO.File.Exists(System.IO.Path.Combine(directory, "stop.txt"))) Thread.Sleep(200);
+                }
+                else
+                {
+                    var notified = !instance.IsPrimary && instance.NotifyPrimary(TimeSpan.FromSeconds(5));
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(directory, "client.txt"), $"elevated={elevated};primary={instance.IsPrimary};notified={notified}");
+                }
+            }
+            catch (Exception ex) { System.IO.File.WriteAllText(System.IO.Path.Combine(directory, role == "--elevation-server" ? "server-error.txt" : "client.txt"), $"elevated={elevated};error={ex.GetType().Name}: {ex.Message}"); }
+            return;
+        }
         if (args.Length == 2 && args[0] == "--instance-probe")
         {
             using var probe = new SingleInstance(args[1]);
@@ -207,6 +232,9 @@ internal static class Program
             string? openedFile = null; string? openedFolder = null;
             var queueWindow = new DownloadQueueWindow(queue, () => true, path => openedFile = path, path => openedFolder = path) { ShowInTaskbar = false, ShowActivated = false };
             queueWindow.Show(); Pump();
+            var localizedPause = (System.Windows.Controls.Button)queueWindow.FindName("PauseButton");
+            Localizer.Apply("zh-TW"); Pump(); if (!Equals(localizedPause.Content, Localizer.Translate("暂停"))) throw new Exception("Open queue did not update its language");
+            Localizer.Apply("en"); Pump();
             ((System.Windows.Controls.DataGrid)queueWindow.FindName("Tasks")).SelectedItem = testEntry; Pump();
             ((System.Windows.Controls.Button)queueWindow.FindName("OpenButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             ((System.Windows.Controls.Button)queueWindow.FindName("FolderButton")).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
@@ -425,6 +453,13 @@ internal static class Program
         {
             if (!primary.IsPrimary) throw new Exception("First instance could not acquire lock");
             primary.StartListening(() => Interlocked.Increment(ref activations));
+            var pipe = (NamedPipeServerStream?)typeof(SingleInstance).GetField("server", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(primary) ?? throw new Exception("Activation pipe not created");
+            using (var windowsIdentity = System.Security.Principal.WindowsIdentity.GetCurrent())
+            {
+                var acl = pipe.GetAccessControl();
+                var rules = acl.GetAccessRules(true, true, typeof(System.Security.Principal.SecurityIdentifier)).Cast<System.Security.AccessControl.AuthorizationRule>().ToArray();
+                if (windowsIdentity.User is null || rules.Length != 1 || !windowsIdentity.User.Equals(rules[0].IdentityReference)) throw new Exception("Activation pipe grants access beyond the current Windows account");
+            }
             using var secondary = StartInstanceProbe("--instance-probe", identity);
             if (!secondary.WaitForExit(10000)) { secondary.Kill(); throw new Exception("Second instance did not exit"); }
             if (secondary.ExitCode != 0 || activations != 1) throw new Exception("Second instance did not notify the primary");
@@ -551,7 +586,7 @@ internal static class Program
     }
     private static void TestUpdateWindows(bool render)
     {
-        var release = new AvailableRelease("beta3", new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero), "更新一\n- 更新二");
+        var release = new AvailableRelease("beta5", new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero), "更新一\n- 更新二");
         var opened = new List<Uri>();
         var githubDialog = new UpdateWindow(release, null, uri => opened.Add(uri)) { ShowInTaskbar = false, ShowActivated = false };
         githubDialog.Show(); Pump();
@@ -1054,7 +1089,7 @@ sealed class DeferredBackupValidationGateway : IBackupGateway
     public Task<VideoInfo> VideoAsync(string bvid) => Task.FromResult(new VideoInfo(bvid, "fixture", "owner", "", [new(1, "P1 · one")], 123, null));
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => throw new Exception("Removed rule requested streams");
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) { DownloadAttempts++; return Task.CompletedTask; }
-    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart) => throw new Exception("Removed rule started a download");
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart) => throw new Exception("Removed rule started a download");
     public async Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) { CheckStarted.TrySetResult(); return await CheckRelease.Task.WaitAsync(cancellation); }
 }
 
@@ -1085,7 +1120,7 @@ sealed class UpdateUiFixture : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Calls++;
-        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta4","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
+        return Task.FromResult(Fail ? new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) : new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(Empty ? "[]" : """[{"tag_name":"beta5","draft":false,"prerelease":true,"published_at":"2026-10-01T10:30:00Z","body":"release notes"}]""") });
     }
 }
 

@@ -74,7 +74,7 @@ public sealed class KeywordEngine(BackupStore store, IKeywordGateway gateway, Fu
         {
             if (!Directory.Exists(rule.Directory)) throw new DirectoryNotFoundException("下载目录不存在。");
             var session = gateway.SessionVersion;
-            var seen = new HashSet<string>(StringComparer.Ordinal); var capped = false;
+            var seen = new HashSet<string>(StringComparer.Ordinal); var capped = false; var missingDates = 0;
             bool CanStart() => store.KeywordEnabled(rule.Id) && gateway.SessionVersion == session;
             void CheckSession()
             {
@@ -147,20 +147,21 @@ public sealed class KeywordEngine(BackupStore store, IKeywordGateway gateway, Fu
                     Update(rule.Id, $"正在搜索第 {page} 页…");
                     var result = await gateway.SearchAsync(term, page);
                     CheckSession();
-                    if (result.Items.Any(x => x.PublishUnix <= 0)) throw new InvalidOperationException("搜索结果缺少发布时间，无法可靠筛选。");
+                    missingDates += result.Items.Count(x => x.PublishUnix <= 0);
                     foreach (var item in result.Items)
                     {
                         if (!store.KeywordEnabled(rule.Id)) return;
                         if (item.PublishUnix >= rule.SinceUnix && KeywordPolicy.Matches(item, rule) && seen.Add(item.Bvid)) await EnqueueVideoAsync(item);
                     }
                     if (result.Items.Count == 0 && page < result.PageCount) throw new InvalidOperationException("搜索分页提前结束，请重试。");
-                    if (page == 50 && result.PageCount >= 50 && result.Items.Any(x => x.PublishUnix >= rule.SinceUnix)) capped = true;
-                    if (result.Items.Count == 0 || result.Items.All(x => x.PublishUnix < rule.SinceUnix) || page >= result.PageCount) break;
+                    if (page == 50 && result.PageCount >= 50 && result.Items.Any(x => x.PublishUnix <= 0 || x.PublishUnix >= rule.SinceUnix)) capped = true;
+                    if (result.Items.Count == 0 || result.Items.All(x => x.PublishUnix > 0 && x.PublishUnix < rule.SinceUnix) || page >= result.PageCount) break;
                 }
             }
             finally { await Task.WhenAll(pending); }
             var status = $"匹配 {seen.Count}，新增 {completed}，失败 {failed}，已有但未登记 {existing}";
             if (capped) status += "；搜索达到 50 页上限，可能漏检";
+            if (missingDates > 0) status += $"；跳过 {missingDates} 条发布时间未知的结果";
             if (firstError is not null) status += "；" + firstError;
             Update(rule.Id, status, failed > 0 ? RetryAt(rule) : DateTimeOffset.UtcNow.AddSeconds(rule.EffectiveIntervalSeconds).ToUnixTimeSeconds());
         }

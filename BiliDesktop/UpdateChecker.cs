@@ -9,7 +9,7 @@ namespace BiliDesktop;
 
 public static class AppVersion
 {
-    public const string Current = "beta3";
+    public const string Current = "beta4";
 }
 
 public record AvailableRelease(string Version, DateTimeOffset PublishedAt, string Notes)
@@ -104,6 +104,8 @@ public sealed class UpdateChecker
             for (var i = 0; i < parts.Length; i++) if (!int.TryParse(parts[i], NumberStyles.None, CultureInfo.InvariantCulture, out core[i])) return false;
             var stage = match.Groups["stage"].Value.ToLowerInvariant() switch { "alpha" => 0, "preview" => 0, "beta" => 1, "rc" => 2, "" => 3, _ => -1 };
             var seq = 0; if (match.Groups["seq"].Success && !int.TryParse(match.Groups["seq"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out seq)) return false;
+            // Historical betaN releases use assembly version 0.N.0-betaN.
+            if (parts.Length == 0 && match.Groups["stage"].Value.Equals("beta", StringComparison.OrdinalIgnoreCase)) core[1] = seq;
             version = new(core, stage, seq); return true;
         }
         public int CompareTo(ReleaseVersion? other)

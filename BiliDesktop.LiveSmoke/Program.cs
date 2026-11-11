@@ -206,9 +206,15 @@ if (args.Length == 2 && args[0] == "--crash-child")
 
 var root = Path.Combine(Path.GetTempPath(), "bili-live-smoke-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
-var preserveRoot = false;
+var preserveRoot = args.Contains("--keep-artifacts");
 try
 {
+    var unverified = Path.Combine(root, "unverified.tmp"); var destination = Path.Combine(root, "merged.mkv");
+    await File.WriteAllTextAsync(unverified, "merge-result");
+    try { LiveMerge.PublishMerge(unverified, destination, 100, 90); throw new Exception("Duration mismatch was accepted"); }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("合并结果已保留供检查")) { }
+    var reviewFiles = Directory.GetFiles(root, "merged-待检查-*.mkv");
+    if (reviewFiles.Length != 1 || await File.ReadAllTextAsync(reviewFiles[0]) != "merge-result" || File.Exists(destination)) throw new Exception("Duration mismatch lost the merged output");
     var recordings = Path.Combine(root, "recordings"); Directory.CreateDirectory(recordings);
     var settings = Path.Combine(root, "live-settings.json");
     await File.WriteAllTextAsync(settings, JsonSerializer.Serialize(new LivePreferences(recordings, [])));

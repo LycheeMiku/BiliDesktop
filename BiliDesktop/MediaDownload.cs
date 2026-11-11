@@ -64,7 +64,7 @@ public static class MediaDownload
             var selectedVideo = preferredVideo is null ? null : streams.Video.FirstOrDefault(v => v.Quality == preferredVideo.Quality && v.Codec == preferredVideo.Codec && v.Bandwidth == preferredVideo.Bandwidth) ?? streams.Video.FirstOrDefault(v => v.Quality == preferredVideo.Quality && v.Codec == preferredVideo.Codec);
             var selectedAudio = preferredAudio is null ? null : streams.Audio.FirstOrDefault(a => a.Quality == preferredAudio.Quality && a.Codec == preferredAudio.Codec && a.Bandwidth == preferredAudio.Bandwidth) ?? streams.Audio.FirstOrDefault(a => a.Quality == preferredAudio.Quality && a.Codec == preferredAudio.Codec);
             if (preferredVideo is not null && selectedVideo is null || preferredAudio is not null && selectedAudio is null) throw new InvalidOperationException("所选音视频流已不可用，请重新解析视频。");
-            await DownloadCoreAsync(selectedVideo?.Urls, selectedAudio?.Urls, null, destination, userAgent, progress, processing, control, audioMetadata);
+            await DownloadCoreAsync(selectedVideo?.Urls, selectedAudio?.Urls, null, destination, userAgent, progress, processing, control, audioMetadata, selectedVideo?.LegacySegments ?? selectedAudio?.LegacySegments);
         }, control?.Token ?? CancellationToken.None, canStart: () => api.SessionVersion == sessionVersion, control: control);
     }
 
@@ -100,15 +100,15 @@ public static class MediaDownload
     }
 
     // The caller must hold a slot acquired through InSlotAsync.
-    internal static Task DownloadWithinSlotAsync(IReadOnlyList<string>? video, IReadOnlyList<string>? audio, string? cover, string destination, string userAgent, IProgress<string> progress, VideoProcessing processing = VideoProcessing.Copy, TransferControl? control = null, AudioMetadata? audioMetadata = null) =>
-        DownloadCoreAsync(video, audio, cover, destination, userAgent, progress, processing, control, audioMetadata);
+    internal static Task DownloadWithinSlotAsync(IReadOnlyList<string>? video, IReadOnlyList<string>? audio, string? cover, string destination, string userAgent, IProgress<string> progress, VideoProcessing processing = VideoProcessing.Copy, TransferControl? control = null, AudioMetadata? audioMetadata = null, IReadOnlyList<LegacySegment>? legacySegments = null) =>
+        DownloadCoreAsync(video, audio, cover, destination, userAgent, progress, processing, control, audioMetadata, legacySegments);
 
-    private static async Task DownloadCoreAsync(IReadOnlyList<string>? video, IReadOnlyList<string>? audio, string? cover, string destination, string userAgent, IProgress<string> progress, VideoProcessing processing, TransferControl? control, AudioMetadata? audioMetadata = null)
+    private static async Task DownloadCoreAsync(IReadOnlyList<string>? video, IReadOnlyList<string>? audio, string? cover, string destination, string userAgent, IProgress<string> progress, VideoProcessing processing, TransferControl? control, AudioMetadata? audioMetadata = null, IReadOnlyList<LegacySegment>? legacySegments = null)
     {
         if (cover is not null && (video is not null || audio is not null) || cover is null && video is null && audio is null) throw new ArgumentException("请选择下载内容。");
         if (audioMetadata is not null && (video is not null || audio is null || cover is not null)) throw new ArgumentException("音频元数据仅适用于仅音频下载。");
         if (video is { Count: 0 } || audio is { Count: 0 }) throw new ArgumentException("媒体地址列表为空。");
-        foreach (var url in (video ?? []).Concat(audio ?? []).Concat(cover is null ? [] : [cover]).Concat(audioMetadata?.CoverUrl is string imageUrl ? [imageUrl] : []))
+        foreach (var url in (video ?? []).Concat(audio ?? []).Concat(legacySegments?.SelectMany(s => s.Urls) ?? []).Concat(cover is null ? [] : [cover]).Concat(audioMetadata?.CoverUrl is string imageUrl ? [imageUrl] : []))
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps) throw new InvalidOperationException("媒体地址无效。");
         var ext = Path.GetExtension(destination).ToLowerInvariant();
         if (cover is null && (ext is not (".mp4" or ".m4a" or ".mkv") || ext == ".m4a" && video is not null)) throw new ArgumentException("不支持的输出格式。");
@@ -135,8 +135,24 @@ public static class MediaDownload
                 completed = true;
                 return;
             }
-            if (video is not null) await aria.DownloadAsync(video, work, "video.m4s", progress, "视频", userAgent, options.Connections, control);
-            if (audio is not null) await aria.DownloadAsync(audio, work, "audio.m4s", progress, "音频", userAgent, options.Connections, control);
+            string? legacyInput = null;
+            List<string>? legacyPieces = null;
+            if (legacySegments is { Count: > 0 })
+            {
+                legacyPieces = new List<string>();
+                for (var i = 0; i < legacySegments.Count; i++)
+                {
+                    var name = $"legacy-{i:D5}.media";
+                    await aria.DownloadAsync(legacySegments[i].Urls, work, name, progress, "视频", userAgent, options.Connections, control);
+                    legacyPieces.Add(Path.Combine(work, name));
+                }
+                legacyInput = Path.Combine(work, "legacy.mkv");
+            }
+            else
+            {
+                if (video is not null) await aria.DownloadAsync(video, work, "video.m4s", progress, "视频", userAgent, options.Connections, control);
+                if (audio is not null) await aria.DownloadAsync(audio, work, "audio.m4s", progress, "音频", userAgent, options.Connections, control);
+            }
             string? coverFile = null;
             if (audioMetadata?.CoverUrl is string image)
             {
@@ -146,15 +162,35 @@ public static class MediaDownload
             }
             if (control is not null) await control.BeginProcessingAsync();
             progress.Report("正在处理媒体文件…");
+            if (legacyPieces is not null) await ConcatenateLegacyAsync(legacyPieces, legacyInput!, control?.Token ?? CancellationToken.None);
             var output = Path.Combine(work, "output" + ext);
-            await ProcessMediaAsync(video is null ? null : Path.Combine(work, "video.m4s"), audio is null ? null : Path.Combine(work, "audio.m4s"), output, processing, control?.Token ?? CancellationToken.None, audioMetadata, coverFile);
+            await ProcessMediaAsync(video is null ? null : legacyInput ?? Path.Combine(work, "video.m4s"), audio is null ? null : legacyInput ?? Path.Combine(work, "audio.m4s"), output, processing, control?.Token ?? CancellationToken.None, audioMetadata, coverFile);
             control?.Token.ThrowIfCancellationRequested();
             File.Move(output, destination, false);
             completed = true;
         }
         catch (OperationCanceledException) { canceled = true; throw; }
-        catch (Exception ex) { throw new InvalidOperationException($"{ex.Message}；临时文件保留于 {work}", ex); }
+        catch (Exception ex)
+        {
+            try { Directory.Delete(work, true); }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException)
+            { throw new InvalidOperationException($"{ex.Message}；无法清理临时目录 {work}：{cleanup.Message}", ex); }
+            throw new InvalidOperationException(ex.Message, ex);
+        }
         finally { if (completed || canceled) { try { Directory.Delete(work, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } } }
+    }
+
+    internal static async Task ConcatenateLegacyAsync(IReadOnlyList<string> files, string output, CancellationToken cancellation)
+    {
+        if (files.Count == 0 || files.Any(path => path.Contains('\r') || path.Contains('\n'))) throw new InvalidOperationException("分段文件路径无效。");
+        var list = output + ".ffconcat";
+        try
+        {
+            var contents = "ffconcat version 1.0\n" + string.Join("\n", files.Select(path => "file '" + Path.GetFullPath(path).Replace('\\', '/').Replace("'", "'\\''") + "'")) + "\n";
+            await File.WriteAllTextAsync(list, contents, new UTF8Encoding(false), cancellation);
+            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-f", "concat", "-safe", "0", "-i", list, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy", "-n", output], cancellation: cancellation);
+        }
+        finally { try { File.Delete(list); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
 
     private static string EncoderName(VideoProcessing processing) => processing switch
@@ -164,7 +200,7 @@ public static class MediaDownload
     internal static Task ValidateMediaToolsAsync(IProgress<string>? progress = null, CancellationToken cancellation = default) =>
         ValidateMediaToolsAsync(() => MediaTools.EnsureAsync(progress, cancellation), executable => RunAsync(executable, ["-version"], TimeSpan.FromSeconds(10), cancellation));
 
-    internal static async Task<bool> ValidateCompleteVideoAsync(string path, double? expectedDuration, CancellationToken cancellation)
+    internal static async Task<bool> ValidateCompleteVideoAsync(string path, double? expectedDuration, CancellationToken cancellation, bool requireAudio = true)
     {
         if (!File.Exists(path) || new FileInfo(path).Length == 0) return false;
         await ValidateMediaToolsAsync(cancellation: cancellation);
@@ -176,10 +212,10 @@ public static class MediaDownload
             var streamList = streams.EnumerateArray().ToArray();
             var hasVideo = streamList.Any(s => s.TryGetProperty("codec_type", out var type) && type.GetString() == "video" && (!s.TryGetProperty("disposition", out var disposition) || !disposition.TryGetProperty("attached_pic", out var attached) || attached.GetInt32() == 0));
             var hasAudio = streamList.Any(s => s.TryGetProperty("codec_type", out var type) && type.GetString() == "audio");
-            if (!hasVideo || !hasAudio) return false;
+            if (!hasVideo || requireAudio && !hasAudio || !requireAudio && hasAudio) return false;
             if (!data.RootElement.TryGetProperty("format", out var format) || !format.TryGetProperty("duration", out var duration) || !double.TryParse(duration.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var seconds) || !double.IsFinite(seconds) || seconds <= 0) return false;
             if (expectedDuration is > 0 && seconds + Math.Max(2, Math.Min(30, expectedDuration.Value * 0.02)) < expectedDuration.Value) return false;
-            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-i", path, "-map", "0:V:0", "-map", "0:a:0", "-f", "null", "-"], cancellation: cancellation);
+            await RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-err_detect", "explode", "-i", path, "-map", "0:V:0", "-map", requireAudio ? "0:a:0" : "0:a:0?", "-f", "null", "-"], cancellation: cancellation);
             return true;
         }
         catch (InvalidOperationException) { return false; }
@@ -253,6 +289,11 @@ public static class MediaDownload
     {
         var resolved = ResolveExecutable(executable, AppContext.BaseDirectory, MediaTools.InstallDirectory);
         var info = new ProcessStartInfo(resolved) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+        if (Path.GetFileNameWithoutExtension(executable).Equals("ffmpeg", StringComparison.OrdinalIgnoreCase) || Path.GetFileNameWithoutExtension(executable).Equals("ffprobe", StringComparison.OrdinalIgnoreCase))
+        {
+            info.StandardOutputEncoding = Encoding.UTF8;
+            info.StandardErrorEncoding = Encoding.UTF8;
+        }
         foreach (var arg in args) info.ArgumentList.Add(arg);
         Process started;
         try { started = Process.Start(info) ?? throw new InvalidOperationException($"无法启动 {executable}"); }

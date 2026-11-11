@@ -13,7 +13,6 @@ public record AudioMetadataOptions(bool EmbedCover = false, bool Artist = false,
         }
         else if (collectionNumber is > 0 || video.CollectionNumber is > 0) number = collectionNumber is > 0 ? collectionNumber : video.CollectionNumber;
         if (!Enabled && number is null) return null;
-        if (Artist && (video.OwnerId is not > 0 || string.IsNullOrWhiteSpace(video.Owner))) throw new InvalidOperationException("无法获取 UP 主名称，不能写入歌手元数据。");
         var trackTitle = DownloadNaming.AudioTitle(video, page, collectionItemTitle);
         if (Title && string.IsNullOrWhiteSpace(trackTitle)) throw new InvalidOperationException("无法获取视频标题，不能写入歌曲名。");
         string? cover = null;
@@ -24,7 +23,7 @@ public record AudioMetadataOptions(bool EmbedCover = false, bool Artist = false,
             cover = uri.Scheme == "http" ? new UriBuilder(uri) { Scheme = "https", Port = -1 }.Uri.AbsoluteUri : uri.AbsoluteUri;
         }
         var album = !string.IsNullOrWhiteSpace(collectionTitle) ? collectionTitle : !string.IsNullOrWhiteSpace(video.CollectionTitle) ? video.CollectionTitle : video.Title;
-        return new(cover, Artist ? video.Owner : null, Title ? trackTitle : null, Album && !string.IsNullOrWhiteSpace(album) ? album : null, number);
+        return new(cover, Artist && video.OwnerId is > 0 && !string.IsNullOrWhiteSpace(video.Owner) ? video.Owner : null, Title ? trackTitle : null, Album && !string.IsNullOrWhiteSpace(album) ? album : null, number);
     }
 }
 public record AudioMetadata(string? CoverUrl, string? Artist, string? Title, string? Album, int? TrackNumber = null);

@@ -181,7 +181,7 @@ public sealed class LiveManager : IDisposable
             var output = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(files[0]))!, $"merged-{session:N}.mkv");
             if (File.Exists(output)) { Append(new("merge-exists", session, room, DateTimeOffset.UtcNow, output)); return; }
             Append(new("merge-start", session, room, DateTimeOffset.UtcNow, output));
-            await LiveMerge.MergeAsync(files, output);
+            await LiveMerge.MergeAsync(files, output, lifetime.Token);
             Append(new("merge-complete", session, room, DateTimeOffset.UtcNow, output));
         }
         catch (Exception ex)

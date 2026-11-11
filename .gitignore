@@ -10,5 +10,10 @@
 *.db
 *.db-shm
 *.db-wal
+**/account.dat
+**/settings.json
+**/download-history.json
+**/live-settings.json
+**/live-events.jsonl
 .env
 .env.*

@@ -13,8 +13,9 @@ public interface IBackupGateway
     Task<MediaStreams> StreamsAsync(string bvid, VideoPage page);
     Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart);
     Task InBackupDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart, string title, string directory, long ruleId) => InDownloadSlotAsync(work, cancellation, canStart);
-    Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart);
+    Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart);
     Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => MediaDownload.ValidateCompleteVideoAsync(path, duration, cancellation);
+    Task<bool> IsCompleteSilentVideoAsync(string path, double? duration, CancellationToken cancellation) => Task.FromResult(false);
 }
 
 public interface IKeywordGateway : IBackupGateway
@@ -32,31 +33,38 @@ public sealed class BiliBackupGateway(BiliApi api) : IKeywordGateway
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => api.GetStreamsForPageAsync(bvid, page);
     public Task<VideoSearchPage> SearchAsync(string keyword, int page) => api.SearchVideosAsync(keyword, page, "pubdate");
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
-    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    public Task<bool> IsCompleteSilentVideoAsync(string path, double? duration, CancellationToken cancellation) => MediaDownload.ValidateCompleteVideoAsync(path, duration, cancellation, requireAudio: false);
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         cancellation.ThrowIfCancellationRequested();
         if (!canStart()) throw new InvalidOperationException("下载规则或登录会话已变化，未启动任务。");
-        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio.Urls, null, destination, api.UserAgent, new Progress<string>());
+        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio?.Urls, null, destination, api.UserAgent, new Progress<string>(), legacySegments: video.LegacySegments ?? audio?.LegacySegments);
     }
 }
 
 public sealed class BackupEngine(BackupStore store, IBackupGateway gateway)
 {
     private readonly SemaphoreSlim runLock = new(1, 1);
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Length, DateTime LastWriteUtc, double? Duration)> verified = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Length, DateTime LastWriteUtc, double? Duration, long Session)> verified = new(StringComparer.OrdinalIgnoreCase);
     public event Action? Changed;
     private void Update(long id, string status, long? next = null) { store.SetStatus(id, status, next); Changed?.Invoke(); }
     public static string FolderDirectory(string root, string title, long folderId) => Path.Combine(root, DownloadNaming.SafeComponent(title) + " [" + folderId.ToString(System.Globalization.CultureInfo.InvariantCulture) + "]");
     public static string FolderDirectory(BackupRule rule) => FolderDirectory(rule.Directory, rule.FolderTitle, rule.FolderId);
-    private async Task<bool> IsCompleteAsync(string path, double? duration, CancellationToken cancellation)
+    private async Task<bool> IsCompleteAsync(string path, double? duration, CancellationToken cancellation, Func<Task<MediaStreams>> sourceStreams)
     {
         var before = new FileInfo(path);
         if (!before.Exists || before.Length == 0) return false;
-        if (verified.TryGetValue(before.FullName, out var cached) && cached == (before.Length, before.LastWriteTimeUtc, duration)) return true;
-        if (!await gateway.IsCompleteVideoAsync(before.FullName, duration, cancellation)) return false;
+        var session = gateway.SessionVersion;
+        if (verified.TryGetValue(before.FullName, out var cached) && cached == (before.Length, before.LastWriteTimeUtc, duration, session)) return true;
+        if (!await gateway.IsCompleteVideoAsync(before.FullName, duration, cancellation))
+        {
+            if (!await gateway.IsCompleteSilentVideoAsync(before.FullName, duration, cancellation)) return false;
+            var streams = await sourceStreams();
+            if (streams.IsPreview || streams.Video.Count == 0 || streams.Audio.Count != 0 || gateway.SessionVersion != session) return false;
+        }
         var after = new FileInfo(path);
         if (!after.Exists || after.Length != before.Length || after.LastWriteTimeUtc != before.LastWriteTimeUtc) return false;
-        verified[after.FullName] = (after.Length, after.LastWriteTimeUtc, duration);
+        verified[after.FullName] = (after.Length, after.LastWriteTimeUtc, duration, session);
         return true;
     }
     private static bool InsideDirectory(string root, string path)
@@ -113,7 +121,7 @@ public sealed class BackupEngine(BackupStore store, IBackupGateway gateway)
                     {
                         foreach (var candidate in new[] { mp4Path, mkvPath })
                         {
-                            if (!await IsCompleteAsync(candidate, page.DurationSeconds, cancellation)) continue;
+                            if (!await IsCompleteAsync(candidate, page.DurationSeconds, cancellation, () => gateway.StreamsAsync(video.Bvid, page))) continue;
                             if (!store.Enabled(rule.Id)) return;
                             if (gateway.SessionVersion != session) throw new BackupSessionChangedException();
                             store.MarkCompleted(rule.Id, video.Bvid, page.Cid, candidate);
@@ -123,8 +131,8 @@ public sealed class BackupEngine(BackupStore store, IBackupGateway gateway)
                         var streams = await gateway.StreamsAsync(video.Bvid, page);
                         if (streams.IsPreview) throw new InvalidOperationException("当前账号只能获取预览，未作为完整视频备份。");
                         var selectedVideo = BatchPolicy.ChooseVideo(streams.Video, null) ?? throw new InvalidOperationException("没有可用视频流。");
-                        var selectedAudio = BatchPolicy.ChooseAudio(streams.Audio, null) ?? throw new InvalidOperationException("没有可用音频流。");
-                        var path = AvailablePath(BatchPolicy.NeedsMatroska(selectedAudio) ? mkvPath : mp4Path);
+                        var selectedAudio = BatchPolicy.ChooseAudio(streams.Audio, null);
+                        var path = AvailablePath(selectedAudio is not null && BatchPolicy.NeedsMatroska(selectedAudio) ? mkvPath : mp4Path);
                         cancellation.ThrowIfCancellationRequested();
                         if (!store.Enabled(rule.Id)) return;
                         if (gateway.SessionVersion != session) throw new BackupSessionChangedException();
@@ -167,7 +175,7 @@ public sealed class BackupEngine(BackupStore store, IBackupGateway gateway)
                         var found = false;
                         foreach (var candidate in candidates.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
                         {
-                            if (!InsideDirectory(rule.Directory, candidate!) || !await IsCompleteAsync(candidate!, page.DurationSeconds, cancellation)) continue;
+                            if (!InsideDirectory(rule.Directory, candidate!) || !await IsCompleteAsync(candidate!, page.DurationSeconds, cancellation, () => gateway.StreamsAsync(video.Bvid, page))) continue;
                             if (!store.Enabled(rule.Id)) return;
                             if (gateway.SessionVersion != session) throw new BackupSessionChangedException();
                             store.MarkCompleted(rule.Id, video.Bvid, page.Cid, candidate!);

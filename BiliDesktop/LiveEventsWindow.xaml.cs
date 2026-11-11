@@ -1,4 +1,5 @@
 using System.Windows;
+using System.IO;
 using Microsoft.Win32;
 
 namespace BiliDesktop;
@@ -19,6 +20,7 @@ public partial class LiveEventsWindow : Window
         }
         var dialog = new SaveFileDialog { Filter = "Matroska 视频|*.mkv", FileName = "直播合并.mkv", OverwritePrompt = false };
         if (dialog.ShowDialog() != true) return;
+        if (File.Exists(dialog.FileName)) { Status.Text = Localizer.Translate("目标文件已存在，请选择其他文件名。"); return; }
         Merge.IsEnabled = false; Status.Text = "正在检查并合并片段…";
         try
         {

@@ -53,7 +53,7 @@ public sealed class BatchDownloadEngine(BiliApi api, VideoStream? preferredVideo
                         var path = BatchPolicy.ChooseMatroska(format, selectedAudio) ? mkvPath : mp4Path;
                         var progress = new Progress<string>(message => { if (!job.Finished) { job.Status = $"{part}/{pages.Count} · {message}"; queueProgress?.Report(job.Status); } });
                         var audioMetadata = mode == 2 && audioOptions is not null ? audioOptions.ForVideo(namingVideo ?? throw new InvalidOperationException("无法获取视频信息。"), page, job.CollectionNumber, job.CollectionTitle, job.CollectionItemTitle) : null;
-                        await MediaDownload.DownloadWithinSlotAsync(selectedVideo?.Urls, selectedAudio?.Urls, null, path, userAgent, progress, control: control, audioMetadata: audioMetadata);
+                        await MediaDownload.DownloadWithinSlotAsync(selectedVideo?.Urls, selectedAudio?.Urls, null, path, userAgent, progress, control: control, audioMetadata: audioMetadata, legacySegments: selectedVideo?.LegacySegments ?? selectedAudio?.LegacySegments);
                         if (pages.Count == 1) job.OutputPath = path;
                     }, control?.Token ?? CancellationToken.None, canStart: () => api.SessionVersion == sessionVersion, control: control);
                     if (appearedWhileQueued) skipped++; else completed++;

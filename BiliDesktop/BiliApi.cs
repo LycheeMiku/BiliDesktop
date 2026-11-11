@@ -17,12 +17,16 @@ public record FavoriteFolder(long Id, string Title, int Count)
     public string Label => $"{Title} · {Count}";
 }
 public record FavoriteContents(IReadOnlyList<CollectionVideo> Videos, int Invalid, int Unsupported);
-public record VideoStream(int Quality, string Codec, long Bandwidth, string Url, IReadOnlyList<string> BackupUrls)
+public record LegacySegment(string Url, IReadOnlyList<string> BackupUrls)
+{
+    public IReadOnlyList<string> Urls => new[] { Url }.Concat(BackupUrls).Distinct(StringComparer.Ordinal).ToArray();
+}
+public record VideoStream(int Quality, string Codec, long Bandwidth, string Url, IReadOnlyList<string> BackupUrls, IReadOnlyList<LegacySegment>? LegacySegments = null)
 {
     public string Label => $"{StreamLabels.Video(Quality)} · {Codec} · {Bandwidth / 1000} kbps";
     public IReadOnlyList<string> Urls => new[] { Url }.Concat(BackupUrls).Distinct(StringComparer.Ordinal).ToArray();
 }
-public record AudioStream(int Quality, string Codec, long Bandwidth, string Url, IReadOnlyList<string> BackupUrls)
+public record AudioStream(int Quality, string Codec, long Bandwidth, string Url, IReadOnlyList<string> BackupUrls, IReadOnlyList<LegacySegment>? LegacySegments = null)
 {
     public string Label => $"{StreamLabels.Audio(Quality)} · {Codec} · {Bandwidth / 1000} kbps";
     public IReadOnlyList<string> Urls => new[] { Url }.Concat(BackupUrls).Distinct(StringComparer.Ordinal).ToArray();
@@ -55,6 +59,10 @@ public sealed class BiliApi
     public string UserAgent { get; private set; } = DefaultUserAgent;
     private static readonly int[] Mixin = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52];
     private readonly HttpClient http;
+    private readonly SemaphoreSlim wbiGate = new(1, 1);
+    private string? wbiKey;
+    private long wbiExpires;
+    private long wbiSession = -1;
     private string cookie = "";
     private string guestBuvid = "";
     private long sessionVersion;
@@ -62,7 +70,8 @@ public sealed class BiliApi
     internal string RecorderCookie => guestBuvid.Length > 0 && !cookie.Split(';').Any(c => c.TrimStart().StartsWith("buvid3=", StringComparison.OrdinalIgnoreCase))
         ? (string.IsNullOrEmpty(cookie) ? "buvid3=" + guestBuvid : cookie + "; buvid3=" + guestBuvid) : cookie;
 
-    public BiliApi() : this(new HttpClientHandler { UseCookies = false, AllowAutoRedirect = false }) { }
+    internal static HttpClientHandler CreateHandler() => new() { UseCookies = false, AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All };
+    public BiliApi() : this(CreateHandler()) { }
     public BiliApi(HttpMessageHandler handler) => http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
 
     public void SetCookie(string value)
@@ -70,6 +79,7 @@ public sealed class BiliApi
         if (value.Contains('\r') || value.Contains('\n')) throw new ArgumentException("Cookie 必须为单行。");
         cookie = value.Trim();
         Interlocked.Increment(ref sessionVersion);
+        Volatile.Write(ref wbiKey, null);
     }
 
     public void SetUserAgent(string value)
@@ -270,7 +280,7 @@ public sealed class BiliApi
         aid = 0; input = input.Trim();
         if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
         {
-            if (uri.Scheme != Uri.UriSchemeHttps || !uri.Host.Equals("www.bilibili.com", StringComparison.OrdinalIgnoreCase)) return false;
+            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.UserInfo.Length != 0 || !(uri.Host.Equals("www.bilibili.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("m.bilibili.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("bilibili.com", StringComparison.OrdinalIgnoreCase))) return false;
             var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 2 || !parts[0].Equals("video", StringComparison.OrdinalIgnoreCase)) return false;
             input = parts[1];
@@ -313,7 +323,7 @@ public sealed class BiliApi
         kind = ""; id = 0; input = input.Trim();
         if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
         {
-            if (uri.Scheme != Uri.UriSchemeHttps || !uri.Host.Equals("www.bilibili.com", StringComparison.OrdinalIgnoreCase)) return false;
+            if (uri.Scheme != Uri.UriSchemeHttps || !uri.IsDefaultPort || uri.UserInfo.Length != 0 || !(uri.Host.Equals("www.bilibili.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("m.bilibili.com", StringComparison.OrdinalIgnoreCase) || uri.Host.Equals("bilibili.com", StringComparison.OrdinalIgnoreCase))) return false;
             var parts = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length != 3 || parts[0] != "bangumi" || parts[1] != "play") return false;
             input = parts[2];
@@ -539,12 +549,30 @@ public sealed class BiliApi
 
     private async Task<string> SignQueryAsync(IDictionary<string, string> values, CancellationToken cancellation = default)
     {
-        var nav = await GetAsync("https://api.bilibili.com/x/web-interface/nav", allowAnonymousNav: true, cancellation: cancellation);
-        var wbi = nav.GetProperty("wbi_img");
-        string stem(string name) => Path.GetFileNameWithoutExtension(new Uri(wbi.GetProperty(name).GetString()!).AbsolutePath);
-        var raw = stem("img_url") + stem("sub_url");
-        if (raw.Length < 64) throw new InvalidOperationException("WBI 密钥无效");
-        var key = new string(Mixin.Select(i => raw[i]).Take(32).ToArray());
+        var key = Volatile.Read(ref wbiKey);
+        if (key is null || Interlocked.Read(ref wbiSession) != SessionVersion || DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= Interlocked.Read(ref wbiExpires))
+        {
+            await wbiGate.WaitAsync(cancellation);
+            try
+            {
+                key = Volatile.Read(ref wbiKey);
+                if (key is null || Interlocked.Read(ref wbiSession) != SessionVersion || DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= Interlocked.Read(ref wbiExpires))
+                {
+                    var session = SessionVersion;
+                    var nav = await GetAsync("https://api.bilibili.com/x/web-interface/nav", allowAnonymousNav: true, cancellation: cancellation);
+                    var wbi = nav.GetProperty("wbi_img");
+                    string stem(string name) => Path.GetFileNameWithoutExtension(new Uri(wbi.GetProperty(name).GetString()!).AbsolutePath);
+                    var raw = stem("img_url") + stem("sub_url");
+                    if (raw.Length < 64) throw new InvalidOperationException("WBI 密钥无效");
+                    key = new string(Mixin.Select(i => raw[i]).Take(32).ToArray());
+                    if (SessionVersion != session) throw new InvalidOperationException("登录会话已变化，请重新查询。");
+                    Interlocked.Exchange(ref wbiExpires, DateTimeOffset.UtcNow.AddHours(6).ToUnixTimeSeconds());
+                    Interlocked.Exchange(ref wbiSession, session);
+                    Volatile.Write(ref wbiKey, key);
+                }
+            }
+            finally { wbiGate.Release(); }
+        }
         return SignWbi(values, key, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
     }
 
@@ -663,6 +691,19 @@ public sealed class BiliApi
         if (!data.TryGetProperty("dash", out var dash) || dash.ValueKind != JsonValueKind.Object)
         {
             if (courseAid.HasValue && data.TryGetProperty("durl", out var segments) && segments.ValueKind == JsonValueKind.Array && segments.GetArrayLength() > 0) throw new InvalidOperationException("当前课程返回的分段流格式暂不支持。");
+            if (data.TryGetProperty("durl", out var legacy) && legacy.ValueKind == JsonValueKind.Array && legacy.GetArrayLength() > 0)
+            {
+                var parts = new List<LegacySegment>();
+                foreach (var item in legacy.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("url", out var address) || address.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(address.GetString())) throw new InvalidOperationException("媒体流缺少下载地址。");
+                    var backupAddresses = item.TryGetProperty("backup_url", out var backup) && backup.ValueKind == JsonValueKind.Array ? backup.EnumerateArray().Where(x => x.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(x.GetString())).Select(x => x.GetString()!).ToArray() : [];
+                    parts.Add(new LegacySegment(address.GetString()!, backupAddresses));
+                }
+                var quality = data.TryGetProperty("quality", out var q) && q.ValueKind == JsonValueKind.Number && q.TryGetInt32(out var value) ? value : 0;
+                var first = parts[0];
+                return new([new VideoStream(quality, "legacy", 0, first.Url, first.BackupUrls, parts)], [new AudioStream(0, "legacy", 0, first.Url, first.BackupUrls, parts)], preview);
+            }
             return new([], [], preview);
         }
         static string baseUrl(JsonElement item)

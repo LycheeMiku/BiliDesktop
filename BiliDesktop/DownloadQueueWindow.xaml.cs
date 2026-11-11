@@ -19,15 +19,23 @@ public partial class DownloadQueueWindow : Window
         this.confirmDelete = confirmDelete ?? (() => MessageBox.Show(string.Format(Localizer.Translate("确定永久删除所选的 {0} 个文件？"), deletionCount), Localizer.Translate("删除文件"), MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes);
         this.openFile = openFile ?? (path => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }));
         this.openFolder = openFolder ?? OpenLocation;
-        InitializeComponent(); Title = Localizer.Translate("下载任务"); Tasks.ItemsSource = queue.Items;
-        SelectAll.ToolTip = Localizer.Translate("全选");
-        NameColumn.Header = Localizer.Translate("名称"); StatusColumn.Header = Localizer.Translate("状态"); ProgressColumn.Header = Localizer.Translate("进度"); BytesColumn.Header = Localizer.Translate("当前流"); SpeedColumn.Header = Localizer.Translate("速度"); ConnectionsColumn.Header = Localizer.Translate("连接数"); EtaColumn.Header = Localizer.Translate("剩余时间");
-        PauseButton.Content = Localizer.Translate("暂停"); ResumeButton.Content = Localizer.Translate("继续"); RetryButton.Content = Localizer.Translate("重试"); CancelButton.Content = Localizer.Translate("取消下载"); OpenButton.Content = Localizer.Translate("打开文件"); FolderButton.Content = Localizer.Translate("打开所在文件夹"); RemoveButton.Content = Localizer.Translate("移除记录"); DeleteButton.Content = Localizer.Translate("删除文件");
+        InitializeComponent(); Tasks.ItemsSource = queue.Items;
+        Localizer.LanguageChanged += RefreshLanguage;
+        Closed += (_, _) => Localizer.LanguageChanged -= RefreshLanguage;
+        RefreshLanguage();
         Tasks.SelectionChanged += (_, _) => { actionError = null; RefreshSelection(); };
         System.Collections.Specialized.NotifyCollectionChangedEventHandler changed = (_, _) => RefreshSelection();
         queue.Items.CollectionChanged += changed;
         var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         timer.Tick += (_, _) => RefreshSelection(); timer.Start(); Closed += (_, _) => { timer.Stop(); queue.Items.CollectionChanged -= changed; }; RefreshSelection();
+    }
+    private void RefreshLanguage()
+    {
+        Title = Localizer.Translate("下载任务");
+        SelectAll.ToolTip = Localizer.Translate("全选");
+        NameColumn.Header = Localizer.Translate("名称"); StatusColumn.Header = Localizer.Translate("状态"); ProgressColumn.Header = Localizer.Translate("进度"); BytesColumn.Header = Localizer.Translate("当前流"); SpeedColumn.Header = Localizer.Translate("速度"); ConnectionsColumn.Header = Localizer.Translate("连接数"); EtaColumn.Header = Localizer.Translate("剩余时间");
+        PauseButton.Content = Localizer.Translate("暂停"); ResumeButton.Content = Localizer.Translate("继续"); RetryButton.Content = Localizer.Translate("重试"); CancelButton.Content = Localizer.Translate("取消下载"); OpenButton.Content = Localizer.Translate("打开文件"); FolderButton.Content = Localizer.Translate("打开所在文件夹"); RemoveButton.Content = Localizer.Translate("移除记录"); DeleteButton.Content = Localizer.Translate("删除文件");
+        RefreshSelection();
     }
     private DownloadEntry[] Targets()
     {

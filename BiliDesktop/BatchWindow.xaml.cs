@@ -118,6 +118,7 @@ public partial class BatchWindow : Window
                     var targetDirectory = job.Page is null && metadata is not null ? DownloadNaming.Folder(directory, metadata) : directory;
                     Directory.CreateDirectory(targetDirectory);
                     var completed = 0; var skipped = 0; var failed = 0;
+                    var partEntries = new List<DownloadEntry>();
                     foreach (var part in parts)
                     {
                         token.Token.ThrowIfCancellationRequested();
@@ -132,7 +133,11 @@ public partial class BatchWindow : Window
                             if (part.OutputPath is null) control.MarkSkipped();
                             return part.OutputPath;
                         });
-                        await entry.Completion;
+                        partEntries.Add(entry);
+                    }
+                    await Task.WhenAll(partEntries.Select(entry => entry.Completion));
+                    foreach (var entry in partEntries)
+                    {
                         if (entry.State == DownloadState.Completed) completed++;
                         else if (entry.State == DownloadState.Skipped) skipped++;
                         else failed++;

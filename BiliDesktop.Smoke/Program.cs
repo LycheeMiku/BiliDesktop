@@ -6,6 +6,7 @@ if (newRelease?.Version != "beta2" || newRelease.Notes != "new notes" || newRele
 if (UpdateChecker.ParseReleases("[]", "beta1") is not null || UpdateChecker.ParseReleases(releaseJson, "beta2") is not null) throw new Exception("Empty or current release was treated as an update");
 var numericReleases = """[{"tag_name":"v1.2.0-rc.9","draft":false,"published_at":"2026-01-01T00:00:00Z"},{"tag_name":"v1.2.0","draft":false,"published_at":"2026-01-02T00:00:00Z"},{"tag_name":"v1.1.9","draft":false,"published_at":"2026-01-03T00:00:00Z"}]""";
 if (UpdateChecker.ParseReleases(numericReleases, "v1.2.0-rc.8")?.Version != "v1.2.0" || UpdateChecker.ParseReleases(numericReleases, "v1.2.0") is not null || UpdateChecker.ParseReleases("""[{"tag_name":"beta10","draft":false,"published_at":"2026-01-01T00:00:00Z"}]""", "beta2")?.Version != "beta10") throw new Exception("Release version ordering failed");
+if (UpdateChecker.ParseReleases("""[{"tag_name":"v0.2.0","draft":false,"published_at":"2026-01-01T00:00:00Z"}]""", "beta3") is not null || UpdateChecker.ParseReleases("""[{"tag_name":"v0.3.0","draft":false,"published_at":"2026-01-01T00:00:00Z"}]""", "beta3")?.Version != "v0.3.0") throw new Exception("Mixed beta and numeric versions were ordered incorrectly");
 if (UpdateChecker.ParseReleases("""[{"tag_name":"v1.2.1+build.7","draft":false,"published_at":"2026-01-01T00:00:00Z"}]""", "v1.2.0")?.Version != "v1.2.1+build.7") throw new Exception("Release build metadata was not accepted");
 if (!UpdateChecker.IsMainlandTimeZone("China Standard Time") || !UpdateChecker.IsMainlandTimeZone("Asia/Urumqi") || UpdateChecker.IsMainlandTimeZone("Asia/Hong_Kong") || UpdateChecker.Sources("Asia/Shanghai").Count != 5 || UpdateChecker.Sources("Europe/Berlin").Count != 1) throw new Exception("Mainland update source selection failed");
 var fallbackHandler = new UpdateFixtureHandler((request, _) =>
@@ -13,12 +14,12 @@ var fallbackHandler = new UpdateFixtureHandler((request, _) =>
     if (request.RequestUri!.Host == "api.github.com") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.BadGateway));
     if (request.RequestUri.Host == "gh.dpik.top") return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("invalid") });
     if (request.RequestUri.Host == "gh-proxy.com") { var redirect = new HttpResponseMessage(System.Net.HttpStatusCode.Redirect); redirect.Headers.Location = new Uri("https://evil.example/releases"); return Task.FromResult(redirect); }
-    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson.Replace("beta2", "beta4")) });
+    return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(releaseJson.Replace("beta2", "beta5")) });
 });
 using (var client = new HttpClient(fallbackHandler))
 {
     var checkedRelease = await new UpdateChecker(client, TimeSpan.FromSeconds(1)).CheckAsync("Asia/Shanghai");
-    if (checkedRelease?.Version != "beta4" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
+    if (checkedRelease?.Version != "beta5" || !fallbackHandler.Hosts.SequenceEqual(["api.github.com", "gh.dpik.top", "gh-proxy.com", "hk.gh-proxy.com"]) || fallbackHandler.SentCookie) throw new Exception("Update mirror fallback, ordering or credential isolation failed");
 }
 var failureHandler = new UpdateFixtureHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)));
 using (var client = new HttpClient(failureHandler))
@@ -67,6 +68,7 @@ if (BiliApi.TryParseCollectionLink("https://space.bilibili.com.evil.test/123/cha
 if (!BiliApi.TryParseUploader("https://space.bilibili.com/123/video", out var uploader) || uploader != 123 || !BiliApi.TryParseUploader("123", out _)) throw new Exception("Uploader input parsing failed");
 if (BiliApi.TryParseUploader("https://space.bilibili.com.evil.test/123", out _)) throw new Exception("Untrusted uploader domain accepted");
 if (!BiliApi.TryParseAvid("AV123", out var avid) || avid != 123 || !BiliApi.TryParseAvid("https://www.bilibili.com/video/av123?p=2", out avid) || avid != 123) throw new Exception("AV parsing failed");
+if (!BiliApi.TryParseAvid("https://m.bilibili.com/video/av170001", out avid) || avid != 170001 || !BiliApi.TryParsePgc("https://bilibili.com/bangumi/play/ep123", out _, out _) || BiliApi.TryParseAvid("https://m.bilibili.com:444/video/av123", out _)) throw new Exception("Mobile and root domain URL parsing failed");
 if (BiliApi.TryParseAvid("https://www.bilibili.com.evil.test/video/av123", out _) || BiliApi.TryParseAvid("av0", out _) || BiliApi.TryParseAvid("av123extra", out _)) throw new Exception("Invalid AV accepted");
 if (BiliApi.RequestedPage("https://www.bilibili.com/video/BV1xx411c7mD?p=2", 3) != 1 || BiliApi.RequestedPage("https://www.bilibili.com/video/BV1xx411c7mD?p=99", 3) != 0 || BiliApi.RequestedPage("https://www.bilibili.com/video/BV1xx411c7mD?p=1&p=2", 3) != 0 || BiliApi.RequestedPage("https://bilibili.com.evil.test/video/BV1xx411c7mD?p=2", 3) != 0) throw new Exception("Page selection failed");
 if (!BiliApi.TryParsePgc("https://www.bilibili.com/bangumi/play/ep123?from=search", out var pgcKind, out var pgcId) || pgcKind != "ep" || pgcId != 123 || !BiliApi.TryParsePgc("ss456", out _, out _)) throw new Exception("PGC link parsing failed");
@@ -75,6 +77,30 @@ if (!BiliApi.TryParseCourse("https://www.bilibili.com/cheese/play/ep790?x=1", ou
 if (BiliApi.TryParseCourse("https://www.bilibili.com.evil.test/cheese/play/ep790", out _, out _) || BiliApi.TryParseCourse("ep790", out _, out _)) throw new Exception("Invalid course URL accepted");
 try { BiliApi.ExtractBvid("invalid"); throw new Exception("Invalid input accepted"); } catch (ArgumentException) { }
 Console.WriteLine("Input parsing passed.");
+using (var handler = BiliApi.CreateHandler())
+    if ((handler.AutomaticDecompression & (System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate | System.Net.DecompressionMethods.Brotli)) != (System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate | System.Net.DecompressionMethods.Brotli)) throw new Exception("Compressed API responses are not decoded");
+using (var gzipListener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+{
+    gzipListener.Start(); var gzipPort = ((System.Net.IPEndPoint)gzipListener.LocalEndpoint).Port;
+    var server = Task.Run(async () =>
+    {
+        using var connection = await gzipListener.AcceptTcpClientAsync(); await using var stream = connection.GetStream();
+        var request = new byte[4096]; await stream.ReadAsync(request);
+        using var buffer = new MemoryStream();
+        using (var gzip = new System.IO.Compression.GZipStream(buffer, System.IO.Compression.CompressionMode.Compress, true)) await gzip.WriteAsync(System.Text.Encoding.UTF8.GetBytes("{\"code\":0}"));
+        var body = buffer.ToArray(); var header = System.Text.Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+        await stream.WriteAsync(header); await stream.WriteAsync(body);
+    });
+    using var client = new HttpClient(BiliApi.CreateHandler());
+    using var json = System.Text.Json.JsonDocument.Parse(await client.GetStringAsync($"http://127.0.0.1:{gzipPort}/"));
+    if (json.RootElement.GetProperty("code").GetInt32() != 0) throw new Exception("Gzip JSON response failed");
+    await server;
+}
+var cacheFixture = new FixtureHandler(); var cacheApi = new BiliApi(cacheFixture); cacheApi.SetUserAgent("BiliDesktop-Fixture/1.0");
+await Task.WhenAll(Enumerable.Range(0, 5).Select(_ => cacheApi.GetStreamsAsync("BV1xx411c7mD", 42)));
+if (cacheFixture.NavRequests != 1) throw new Exception("Concurrent WBI signatures fetched duplicate keys");
+cacheApi.SetCookie("SESSDATA=fixture"); await cacheApi.GetStreamsAsync("BV1xx411c7mD", 42);
+if (cacheFixture.NavRequests != 2) throw new Exception("WBI key was not refreshed after changing session");
 using (var sizeClient = new HttpClient(new SizeProbeFixture()))
 {
     var length = await MediaSizeProbe.GetSizeAsync("https://example.test/video", "BiliDesktop-Fixture/1.0", client: sizeClient);
@@ -210,6 +236,8 @@ if (pgc.Pages.Count != 2 || pgc.Pages[1].EpisodeId != 124 || pgc.Pages[1].Bvid !
 var pgcStreams = await fake.GetStreamsAsync(pgc.Pages[0].Bvid!, pgc.Pages[0].Cid, pgc.Pages[0].EpisodeId);
 if (pgcStreams.Video.Count != 1 || pgcStreams.Video[0].Urls.Count != 2 || pgcStreams.Video[0].Url != "https://example.com/v") throw new Exception("PGC playback or snake_case URLs parsing failed");
 if (!(await fake.GetStreamsAsync(pgc.Pages[1].Bvid!, pgc.Pages[1].Cid, pgc.Pages[1].EpisodeId)).IsPreview) throw new Exception("PGC preview was not identified");
+var legacyStreams = await fake.GetStreamsAsync("BV1xx411c7mD", 42, 126);
+if (legacyStreams.Video.Single().LegacySegments?.Count != 2 || legacyStreams.Audio.Single().LegacySegments?[1].BackupUrls.Single() != "https://example.com/backup2") throw new Exception("Legacy segmented streams were not parsed");
 var audioOnlyStreams = await fake.GetStreamsAsync("BV0000000001", 3, 125);
 if (audioOnlyStreams.Video.Count != 0 || audioOnlyStreams.Audio.Count != 1 || audioOnlyStreams.Audio[0].Urls.Count != 2) throw new Exception("Audio-only DASH or backup_url parsing failed");
 if (StreamLabels.Video(80) != "1080P" || StreamLabels.Video(999) != "Q999" || StreamLabels.Audio(30251) != "Hi-Res" || StreamLabels.Audio(30250) != "Dolby Atmos") throw new Exception("Stream quality labels failed");
@@ -726,6 +754,12 @@ try
         await new KeywordEngine(blockedStore, new BackupFixtureGateway { SearchError = "请求被平台拦截（HTTP 412）" }).RunDueAsync();
         var blocked = blockedStore.ListKeywords().Single();
         if (!blocked.Status.StartsWith("检查失败：", StringComparison.Ordinal) || blocked.NextRun < DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 299) throw new Exception("Platform rate-limit backoff failed");
+        var undatedStore = new BackupStore(Path.Combine(temporary, "undated-keywords.db"));
+        var undatedDir = Path.Combine(temporary, "undated-results"); Directory.CreateDirectory(undatedDir);
+        undatedStore.AddKeyword(["cat"], since, undatedDir, 30, KeywordMatchMode.Any, 250);
+        var undatedGateway = new BackupFixtureGateway { IncludeUndated = true };
+        await new KeywordEngine(undatedStore, undatedGateway).RunDueAsync();
+        if (undatedGateway.Successes != 2 || !undatedStore.ListKeywords().Single().Status.Contains("发布时间未知")) throw new Exception("Undated search results blocked matching videos");
         Console.WriteLine("Keyword migration, any/all matching, rule folders, naming, query pacing and seconds scheduling passed.");
 
         var flacBackupDir = Path.Combine(temporary, "flac-backup"); Directory.CreateDirectory(flacBackupDir);
@@ -741,6 +775,17 @@ try
         await new BackupEngine(restart, new BackupFixtureGateway()).RunDueAsync();
         if (!restart.List().Single(r => r.FolderId == 460).Status.Contains("已有完整 2")) throw new Exception("Existing MKV was not detected");
         restart.Remove(flacBackupRule.Id); restart.Remove(restart.List().Single(r => r.FolderId == 460).Id);
+
+        var silentDir = Path.Combine(temporary, "silent-backup"); Directory.CreateDirectory(silentDir);
+        var silentStore = new BackupStore(Path.Combine(temporary, "silent-backup.db"));
+        silentStore.Add(123, new FavoriteFolder(461, "silent", 1), silentDir, 5);
+        var silentGateway = new BackupFixtureGateway { Silent = true }; var silentEngine = new BackupEngine(silentStore, silentGateway);
+        await silentEngine.RunDueAsync(); var silentRule = silentStore.List().Single();
+        if (silentGateway.Successes != 2) throw new Exception("Silent source was not backed up");
+        silentStore.RunNow(silentRule.Id); await silentEngine.RunDueAsync();
+        if (silentGateway.Successes != 2 || !silentStore.List().Single().Status.Contains("已有完整 2")) throw new Exception("Silent backup was downloaded again");
+        silentGateway.Silent = false; silentGateway.SessionVersion++; silentStore.RunNow(silentRule.Id); await silentEngine.RunDueAsync();
+        if (silentGateway.Successes != 4) throw new Exception("Missing audio was accepted after the source provided audio");
 
         var flacKeywordDir = Path.Combine(temporary, "flac-keyword"); Directory.CreateDirectory(flacKeywordDir);
         restart.AddKeyword("cat", DateTimeOffset.UtcNow.AddDays(-1).ToUnixTimeSeconds(), flacKeywordDir, 5);
@@ -837,9 +882,16 @@ try
     await MediaDownload.RunAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "color=size=192x108:rate=10", "-t", "1", "-c:v", "mpeg4", "-an", videoPath]);
     await MediaDownload.RunAsync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "1", "-c:a", "aac", "-vn", audioPath]);
     await MediaDownload.ProcessMediaAsync(videoPath, audioPath, outputPath);
+    var legacyPart = Path.Combine(temporary, "片段 'two'.mp4"); File.Copy(outputPath, legacyPart);
+    var legacyOutput = Path.Combine(temporary, "legacy.mkv"); await MediaDownload.ConcatenateLegacyAsync([outputPath, legacyPart], legacyOutput, CancellationToken.None);
+    if (!await MediaDownload.ValidateCompleteVideoAsync(legacyOutput, 2, CancellationToken.None)) throw new Exception("Legacy parts could not be safely concatenated");
+    var cleanupRoot = Path.Combine(temporary, "cleanup"); Directory.CreateDirectory(cleanupRoot);
+    try { await MediaDownload.DownloadAsync(["https://example.invalid/video"], null, null, Path.Combine(cleanupRoot, "output.mp4"), "fixture", new CaptureProgress(), processing: (VideoProcessing)999); throw new Exception("Invalid encoder was accepted"); } catch (InvalidOperationException) { }
+    if (Directory.EnumerateDirectories(cleanupRoot, ".bili-*").Any()) throw new Exception("Failed download left a temporary directory");
     var truncatedPath = Path.Combine(temporary, "truncated.mp4");
     var fullBytes = File.ReadAllBytes(outputPath); File.WriteAllBytes(truncatedPath, fullBytes[..(fullBytes.Length / 2)]);
     if (!await MediaDownload.ValidateCompleteVideoAsync(outputPath, 1, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(outputPath, 30, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(videoPath, null, CancellationToken.None) || await MediaDownload.ValidateCompleteVideoAsync(truncatedPath, null, CancellationToken.None)) throw new Exception("Existing media integrity verification failed");
+    if (!await MediaDownload.ValidateCompleteVideoAsync(videoPath, 1, CancellationToken.None, requireAudio: false) || await MediaDownload.ValidateCompleteVideoAsync(outputPath, 1, CancellationToken.None, requireAudio: false) || await MediaDownload.ValidateCompleteVideoAsync(truncatedPath, null, CancellationToken.None, requireAudio: false)) throw new Exception("Silent video validation did not distinguish sound or corruption");
     Console.WriteLine("Existing media verification detects missing streams, truncation and insufficient duration.");
     await MediaDownload.ProcessMediaAsync(videoPath, null, Path.Combine(temporary, "video-only.mp4"));
     await MediaDownload.ProcessMediaAsync(null, audioPath, Path.Combine(temporary, "audio-only.m4a"));
@@ -860,7 +912,7 @@ try
     var collectionTags = new AudioMetadataOptions(Title: true, Album: true).ForVideo(collectionSample, collectionSample.Pages[0]);
     if (DownloadNaming.AudioBaseName(collectionSample, collectionSample.Pages[0]) != "老街北" || collectionTags?.Title != "老街北" || collectionTags.Album != "纯蓝幻乐济南场" || collectionTags.TrackNumber != 7) throw new Exception("Collection song name, album or position failed");
     try { metadataOptions.ForVideo(metadataVideo with { CoverUrl = "" }, metadataVideo.Pages[0]); throw new Exception("Missing requested cover was accepted"); } catch (InvalidOperationException) { }
-    try { new AudioMetadataOptions(Artist: true).ForVideo(metadataVideo with { OwnerId = null, Owner = "番剧" }, metadataVideo.Pages[0]); throw new Exception("Unknown creator was written as artist"); } catch (InvalidOperationException) { }
+    if (new AudioMetadataOptions(Artist: true, Title: true).ForVideo(metadataVideo with { OwnerId = null, Owner = "番剧" }, metadataVideo.Pages[0]) is not { Artist: null, Title: not null }) throw new Exception("PGC audio should omit unknown artist and preserve other metadata");
     var imagePath = Path.Combine(temporary, "fixture-cover.jpg");
     await MediaDownload.RunAsync("ffmpeg", ["-nostdin", "-v", "error", "-f", "lavfi", "-i", "color=c=red:size=64x64", "-frames:v", "1", "-update", "1", imagePath]);
     foreach (var (sourceAudio, extension) in new[] { (audioPath, ".m4a"), (flacPath, ".mkv") })
@@ -871,6 +923,19 @@ try
         using var parsed = System.Text.Json.JsonDocument.Parse(json);
         var formatTags = parsed.RootElement.GetProperty("format").GetProperty("tags").EnumerateObject().ToDictionary(x => x.Name, x => x.Value.GetString(), StringComparer.OrdinalIgnoreCase);
         if (formatTags.GetValueOrDefault("artist") != tags.Artist || formatTags.GetValueOrDefault("title") != tags.Title || formatTags.GetValueOrDefault("album") != tags.Album || formatTags.GetValueOrDefault("track")?.Split('/')[0] != "2") throw new Exception("Audio metadata or track number was not written correctly to " + extension);
+        if (OperatingSystem.IsWindows())
+        {
+            var originalEncoding = Console.OutputEncoding;
+            try
+            {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                Console.OutputEncoding = System.Text.Encoding.GetEncoding(936);
+                var utf8Json = await MediaDownload.RunAsync("ffprobe", ["-v", "error", "-show_entries", "format_tags=title", "-of", "json", tagged]);
+                using var utf8Parsed = System.Text.Json.JsonDocument.Parse(utf8Json);
+                if (utf8Parsed.RootElement.GetProperty("format").GetProperty("tags").GetProperty("title").GetString() != tags.Title) throw new Exception("ffprobe UTF-8 output was decoded using the system code page");
+            }
+            finally { Console.OutputEncoding = originalEncoding; }
+        }
         var probeStreams = parsed.RootElement.GetProperty("streams").EnumerateArray().ToArray();
         if (!probeStreams.Any(x => x.GetProperty("codec_type").GetString() == "audio" && x.GetProperty("codec_name").GetString() == (extension == ".m4a" ? "aac" : "flac"))) throw new Exception("Audio was unexpectedly transcoded");
         var hasCover = probeStreams.Any(x => x.GetProperty("codec_type").GetString() == "video" && x.GetProperty("codec_name").GetString() == "mjpeg" && x.TryGetProperty("disposition", out var disposition) && disposition.GetProperty("attached_pic").GetInt32() == 1 && (extension == ".m4a" || x.TryGetProperty("tags", out var attachmentTags) && attachmentTags.GetProperty("mimetype").GetString() == "image/jpeg"));
@@ -1033,8 +1098,8 @@ if (args.Contains("--live-parts"))
 if (args.Contains("--live-search"))
 {
     var liveSearch = await new BiliApi().SearchVideosAsync("音乐", 1, "totalrank");
-    if (liveSearch.Items.Count == 0 || liveSearch.Items.Any(x => x.PublishUnix <= 0)) throw new Exception("Live search returned no results or missing publish timestamps.");
-    Console.WriteLine($"Live search: {liveSearch.Items.Count} results, {liveSearch.PageCount} pages.");
+    if (liveSearch.Items.Count == 0 || liveSearch.Items.All(x => x.PublishUnix <= 0)) throw new Exception("Live search returned no results with usable publish timestamps.");
+    Console.WriteLine($"Live search: {liveSearch.Items.Count} results, {liveSearch.PageCount} pages, {liveSearch.Items.Count(x => x.PublishUnix <= 0)} without publish timestamps.");
     return;
 }
 if (args.Contains("--live-cover"))
@@ -1319,7 +1384,7 @@ sealed class LimitedLiveKeywordGateway(BiliApi api, SearchVideo sample) : IKeywo
     public Task<VideoInfo> VideoAsync(string bvid) => media.VideoAsync(bvid);
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => media.StreamsAsync(bvid, page);
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => media.InDownloadSlotAsync(work, cancellation, canStart);
-    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart) => media.DownloadWithinSlotAsync(video, audio, destination, cancellation, canStart);
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart) => media.DownloadWithinSlotAsync(video, audio, destination, cancellation, canStart);
     public Task<VideoSearchPage> SearchAsync(string keyword, int page) => Task.FromResult(new VideoSearchPage(1, 1, [sample]));
 }
 
@@ -1339,11 +1404,11 @@ sealed class LimitedLiveBackupGateway(BiliApi api, CollectionVideo sample) : IBa
         return streams with { Video = streams.Video.OrderBy(x => x.Bandwidth).Take(1).ToArray(), Audio = streams.Audio.OrderBy(x => x.Bandwidth).Take(1).ToArray() };
     }
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
-    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         cancellation.ThrowIfCancellationRequested();
         if (!canStart()) throw new InvalidOperationException("Fixture rule changed");
-        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio.Urls, null, destination, api.UserAgent, new Progress<string>());
+        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio?.Urls, null, destination, api.UserAgent, new Progress<string>());
     }
 }
 
@@ -1481,11 +1546,14 @@ sealed class ShortLinkHandler : HttpMessageHandler
 sealed class FixtureHandler(string collectedMode = "", bool previewVideo = false, Action? onStream = null, string? paidPreview = null) : HttpMessageHandler
 {
     private int streamRequests;
+    private int navRequests;
+    public int NavRequests => Volatile.Read(ref navRequests);
     public int StreamRequests => Volatile.Read(ref streamRequests);
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         if (!request.Headers.TryGetValues("User-Agent", out var ua) || string.Join("", ua) != "BiliDesktop-Fixture/1.0") throw new Exception("API did not send configured user agent");
         var path = request.RequestUri!.AbsolutePath;
+        if (path == "/x/web-interface/nav") Interlocked.Increment(ref navRequests);
         if (path == "/x/player/wbi/playurl") { Interlocked.Increment(ref streamRequests); onStream?.Invoke(); }
         var json = path switch
         {
@@ -1511,6 +1579,7 @@ sealed class FixtureHandler(string collectedMode = "", bool previewVideo = false
             "/pgc/player/web/playurl" when request.RequestUri.Query.Contains("ep_id=123") => """{"code":0,"result":{"dash":{"video":[{"id":64,"codecs":"avc","bandwidth":200,"base_url":"https://example.com/v","backup_url":["https://example.com/v2"]}]}}}""",
             "/pgc/player/web/playurl" when request.RequestUri.Query.Contains("ep_id=124") => """{"code":0,"result":{"is_preview":1,"dash":{"video":[{"id":64,"codecs":"avc","bandwidth":200,"baseUrl":"https://example.com/v"}]}}}""",
             "/pgc/player/web/playurl" when request.RequestUri.Query.Contains("ep_id=125") => """{"code":0,"result":{"dash":{"audio":[{"id":30216,"codecs":"aac","bandwidth":64000,"base_url":"https://example.com/a","backup_url":["https://example.com/a2"]}]}}}""",
+            "/pgc/player/web/playurl" when request.RequestUri.Query.Contains("ep_id=126") => """{"code":0,"result":{"quality":64,"durl":[{"url":"https://example.com/1"},{"url":"https://example.com/2","backup_url":["https://example.com/backup2"]}]}}""",
             "/pugv/view/web/season" => """{"code":0,"data":{"season_id":61,"title":"fixture course","cover":"https://example.com/cover.jpg","episodes":[],"episode_page":{"next":true,"total":4},"up_info":{"uname":"fixture teacher"}}}""",
             "/pugv/view/web/ep/list" when request.RequestUri.Query.Contains("pn=1") => """{"code":0,"data":{"page":{"next":true,"total":4},"items":[{"id":790,"cid":21,"aid":11,"status":1,"title":"first"},{"id":792,"cid":22,"aid":12,"status":2,"title":"locked"}]}}""",
             "/pugv/view/web/ep/list" when request.RequestUri.Query.Contains("pn=2") => """{"code":0,"data":{"page":{"next":false,"total":4},"items":[{"id":793,"cid":23,"aid":13,"status":1,"title":"third"},{"id":794,"cid":0,"aid":0,"title":"upcoming"}]}}""",
@@ -1561,6 +1630,8 @@ sealed class BackupFixtureGateway : IKeywordGateway
     public int Successes => Volatile.Read(ref successes);
     public bool FailSecondOnce { get; set; }
     public bool UseFlac { get; set; }
+    public bool Silent { get; set; }
+    public bool IncludeUndated { get; set; }
     public bool IncludeDuration { get; set; }
     public string? SearchError { get; set; }
     public int StreamCalls { get; private set; }
@@ -1572,7 +1643,7 @@ sealed class BackupFixtureGateway : IKeywordGateway
         SearchCalls++;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return Task.FromResult(page == 1
-            ? new VideoSearchPage(1, 2, [new("BV1xx411c7mD", "cat video", "owner", "1:00", now), new("BV0000000001", "unrelated", "owner", "1:00", now)])
+            ? new VideoSearchPage(1, 2, IncludeUndated ? [new("BV1xx411c7mD", "cat video", "owner", "1:00", now), new("BV0000000001", "cat unknown", "owner", "1:00", 0)] : [new("BV1xx411c7mD", "cat video", "owner", "1:00", now), new("BV0000000001", "unrelated", "owner", "1:00", now)])
             : new VideoSearchPage(2, 2, [new("BV0000000002", "cat old", "owner", "1:00", 1000)]));
     }
     public Task<VideoInfo> VideoAsync(string bvid) => Task.FromResult(new VideoInfo(bvid, "fixture", "owner", "", [new(11, FirstLabel, DurationSeconds: IncludeDuration ? 10 : null), new(22, "P2 · two", DurationSeconds: IncludeDuration ? 10 : null)], 123, null));
@@ -1580,16 +1651,17 @@ sealed class BackupFixtureGateway : IKeywordGateway
     {
         StreamCalls++;
         if (ChangeSessionDuringStreams) { SessionVersion++; ChangeSessionDuringStreams = false; }
-        return Task.FromResult(new MediaStreams([new(80, "avc", 200, "https://example.com/v", [])], UseFlac ? [new(30251, "flac", 1000, "https://example.com/a", [])] : [new(1, "aac", 100, "https://example.com/a", [])]));
+        return Task.FromResult(new MediaStreams([new(80, "avc", 200, "https://example.com/v", [])], Silent ? [] : UseFlac ? [new(30251, "flac", 1000, "https://example.com/a", [])] : [new(1, "aac", 100, "https://example.com/a", [])]));
     }
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
-    public Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => Task.FromResult(File.Exists(path) && File.ReadAllText(path) != "corrupt");
-    public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    public Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => Task.FromResult(File.Exists(path) && File.ReadAllText(path) is not ("corrupt" or "silent"));
+    public Task<bool> IsCompleteSilentVideoAsync(string path, double? duration, CancellationToken cancellation) => Task.FromResult(File.Exists(path) && File.ReadAllText(path) == "silent");
+    public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         cancellation.ThrowIfCancellationRequested();
         if (!canStart()) throw new InvalidOperationException("Fixture rule changed");
         if (FailSecondOnce && (Path.GetFileName(destination).Contains("_P002_") || Path.GetFileName(destination).Contains("-002-"))) { FailSecondOnce = false; throw new IOException("fixture failure"); }
-        await File.WriteAllTextAsync(destination, "fixture"); Interlocked.Increment(ref successes);
+        await File.WriteAllTextAsync(destination, audio is null ? "silent" : "fixture"); Interlocked.Increment(ref successes);
     }
 }
 
@@ -1607,7 +1679,7 @@ sealed class ConcurrentBackupFixtureGateway : IBackupGateway
     public Task<MediaStreams> StreamsAsync(string bvid, VideoPage page) => inner.StreamsAsync(bvid, page);
     public Task InDownloadSlotAsync(Func<Task> work, CancellationToken cancellation, Func<bool> canStart) => MediaDownload.InSlotAsync(work, cancellation, canStart);
     public Task<bool> IsCompleteVideoAsync(string path, double? duration, CancellationToken cancellation) => inner.IsCompleteVideoAsync(path, duration, cancellation);
-    public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    public async Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         var count = Interlocked.Increment(ref active);
         lock (sync) Maximum = Math.Max(Maximum, count);

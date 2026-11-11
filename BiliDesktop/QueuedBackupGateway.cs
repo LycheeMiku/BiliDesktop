@@ -41,12 +41,13 @@ public sealed class QueuedBackupGateway(BiliApi api, DownloadQueue? taskQueue = 
         if (entry.State == DownloadState.Canceled) throw new InvalidOperationException("用户取消下载。");
         if (entry.Failure is Exception failure) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
     }
-    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream audio, string destination, CancellationToken cancellation, Func<bool> canStart)
+    public Task<bool> IsCompleteSilentVideoAsync(string path, double? duration, CancellationToken cancellation) => inner.IsCompleteSilentVideoAsync(path, duration, cancellation);
+    public Task DownloadWithinSlotAsync(VideoStream video, AudioStream? audio, string destination, CancellationToken cancellation, Func<bool> canStart)
     {
         cancellation.ThrowIfCancellationRequested();
         if (!canStart()) throw new InvalidOperationException("下载规则或登录会话已变化，未启动任务。");
         var context = current.Value ?? throw new InvalidOperationException("自动下载任务上下文不可用。");
         context.Destination = destination; context.Control.Identity?.Invoke(Path.GetFileName(destination), destination);
-        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio.Urls, null, destination, api.UserAgent, context.Progress, control: context.Control);
+        return MediaDownload.DownloadWithinSlotAsync(video.Urls, audio?.Urls, null, destination, api.UserAgent, context.Progress, control: context.Control, legacySegments: video.LegacySegments ?? audio?.LegacySegments);
     }
 }

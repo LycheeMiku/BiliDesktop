@@ -218,6 +218,7 @@ public partial class MainWindow : Window
         var selectedVideo = mode is 0 or 1 ? Streams.SelectedItem as VideoStream : null;
         var selectedAudio = mode is 0 or 2 ? AudioStreams.SelectedItem as AudioStream : null;
         if (mode == 3 || selectedVideo is null && selectedAudio is null) { SelectedSize.Text = ""; return; }
+        if (selectedVideo?.LegacySegments is not null || selectedAudio?.LegacySegments is not null) { SelectedSize.Text = Localizer.Translate("所选流大小未知"); return; }
         SelectedSize.Text = Localizer.Translate("正在查询所选规格大小…");
         var tasks = new[] { selectedVideo?.Urls, selectedAudio?.Urls }.Where(x => x is not null).Select(x => MediaSizeProbe.GetSizeAsync(x!, api.UserAgent, cancellation)).ToArray();
         try
@@ -506,6 +507,7 @@ public partial class MainWindow : Window
             var extension = mode == 3 ? coverExtension : preferMatroska ? ".mkv" : mode == 2 ? ".m4a" : ".mp4";
             var path = ChooseDownloadPath(automatic, initialDirectory, suggestedName, extension, filter, preferMatroska, DownloadQueue.Shared, dialog => dialog.ShowDialog(this));
             if (path is null) return;
+            if (File.Exists(path)) throw new IOException("目标文件已存在，请选择其他文件名。");
             EnqueueManualDownload(DownloadQueue.Shared, Path.GetFileName(path), path, async (control, progress) =>
             {
                 if (cover is not null) await MediaDownload.DownloadAsync(null, null, cover, path, ua, progress, processing: processing, control: control);

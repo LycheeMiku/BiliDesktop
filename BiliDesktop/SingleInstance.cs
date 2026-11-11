@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Security.AccessControl;
 using System.Text;
 
 namespace BiliDesktop;
@@ -44,7 +45,14 @@ internal sealed class SingleInstance : IDisposable
                 lock (gate)
                 {
                     if (disposed) return;
-                    server = current = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                    using var identity = WindowsIdentity.GetCurrent();
+                    var sid = identity.User ?? throw new InvalidOperationException("无法确定当前 Windows 用户。");
+                    // Restrict activation to this account while allowing either UAC elevation level.
+                    var security = new PipeSecurity();
+                    security.SetOwner(sid);
+                    security.SetAccessRuleProtection(true, false);
+                    security.AddAccessRule(new PipeAccessRule(sid, PipeAccessRights.FullControl, AccessControlType.Allow));
+                    server = current = NamedPipeServerStreamAcl.Create(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous, 0, 0, security);
                 }
                 await current.WaitForConnectionAsync(stopping.Token).ConfigureAwait(false);
                 var request = new byte[1];
@@ -70,7 +78,7 @@ internal sealed class SingleInstance : IDisposable
         if (IsPrimary || disposed) return false;
         try
         {
-            using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
             using var cancellation = new CancellationTokenSource(timeout);
             client.ConnectAsync(cancellation.Token).GetAwaiter().GetResult();
             client.WriteAsync(new byte[] { 1 }, cancellation.Token).AsTask().GetAwaiter().GetResult();
